@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NewsFlow 控制台</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <div class="nav">
+        <h1>📰 每日新闻流</h1>
+        <div class="actions">
+            <button id="btn-collect" onclick="collectNews()">📥 采集</button>
+            <button id="btn-daily" class="primary" onclick="runDaily()">⚡ 每日任务</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div id="toast" class="toast"></div>
+
+        <div id="task-bar" class="task-bar">
+            <div class="progress-wrap">
+                <div class="progress-text" id="task-message">准备中...</div>
+                <div class="progress-track">
+                    <div class="progress-fill" id="task-progress" style="width:0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('dashboard')">概览</button>
+            <button class="tab" onclick="switchTab('news')">新闻流</button>
+            <button class="tab" onclick="switchTab('newsletters')">简报</button>
+            <button class="tab" onclick="switchTab('push')">推送</button>
+            <button class="tab" onclick="switchTab('system')">系统</button>
+        </div>
+
+        <!-- 概览面板 -->
+        <div id="panel-dashboard" class="panel active">
+            <div class="stats" id="stats"></div>
+            <div class="card">
+                <h2>分类概览</h2>
+                <div class="category-overview" id="category-overview"></div>
+            </div>
+            <div class="card">
+                <h2>最近新闻</h2>
+                <div id="recent-news"></div>
+            </div>
+        </div>
+
+        <!-- 新闻流面板 -->
+        <div id="panel-news" class="panel">
+            <div class="card">
+                <div class="action-bar">
+                    <select id="news-category-filter" onchange="newsPage=0;loadNews()">
+                        <option value="">全部分类</option>
+                    </select>
+                    <select id="news-source-filter" onchange="newsPage=0;loadNews()">
+                        <option value="">全部来源</option>
+                    </select>
+                    <input type="number" id="news-limit" value="50" min="1" max="200" style="max-width:70px" onchange="newsPage=0;loadNews()">
+                    <span style="font-size:11px;color:var(--text-secondary)">条/页</span>
+                </div>
+                <div id="news-list"></div>
+                <div id="news-pagination" style="display:flex;justify-content:center;gap:10px;margin-top:14px"></div>
+            </div>
+        </div>
+
+        <!-- 简报面板 -->
+        <div id="panel-newsletters" class="panel">
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+                    <h2>历史简报</h2>
+                    <button class="btn btn-primary" onclick="generateNewsletter()">生成今日简报</button>
+                </div>
+                <div id="newsletter-list"></div>
+            </div>
+        </div>
+
+        <!-- 推送面板 -->
+        <div id="panel-push" class="panel">
+            <div class="card">
+                <div class="card-title-row">
+                    <div>
+                        <h2>定时推送目标</h2>
+                        <p class="card-hint">仅显示已与机器人产生过对话的会话。目标群或私聊先发送一条消息后，刷新列表即可选择。</p>
+                    </div>
+                    <button class="btn btn-secondary" type="button" onclick="loadPushTargets()">刷新会话</button>
+                </div>
+                <label class="select-label" for="target-sessions-select">选择定时推送的群或私聊</label>
+                <select id="target-sessions-select" class="target-sessions-select" multiple size="8" aria-describedby="target-sessions-help"></select>
+                <p id="target-sessions-help" class="selection-help">按住 Ctrl 或 Command 可多选。保存后，下一次定时简报将推送到这些会话。</p>
+                <div class="push-actions">
+                    <button class="btn btn-primary" type="button" onclick="savePushTargets()">保存推送目标</button>
+                    <span id="target-sessions-status" class="selection-status"></span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 系统面板 -->
+        <div id="panel-system" class="panel">
+            <div class="card">
+                <h2>快捷操作</h2>
+                <div style="display:flex;gap:10px;flex-wrap:wrap">
+                    <button class="btn btn-primary" onclick="collectNews()">📥 采集新闻</button>
+                    <button class="btn btn-success" onclick="generateNewsletter()">📋 生成简报</button>
+                    <button class="btn btn-primary" onclick="runDaily()">⚡ 执行每日任务</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="newsletter-preview" class="newsletter-preview" hidden>
+        <div class="newsletter-preview__backdrop" onclick="closeNewsletterPreview()"></div>
+        <section class="newsletter-preview__dialog" role="dialog" aria-modal="true" aria-labelledby="newsletter-preview-title">
+            <div class="newsletter-preview__header">
+                <div>
+                    <span class="newsletter-preview__eyebrow">历史简报</span>
+                    <strong id="newsletter-preview-title">简报预览</strong>
+                </div>
+                <button class="btn btn-secondary" type="button" onclick="closeNewsletterPreview()">关闭</button>
+            </div>
+            <iframe id="newsletter-preview-frame" title="简报预览" sandbox=""></iframe>
+        </section>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+</body>
+</html>

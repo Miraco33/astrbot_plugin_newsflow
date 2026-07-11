@@ -1,0 +1,74 @@
+{
+    "ai_provider": {
+        "description": "AI 提供商",
+        "type": "string",
+        "hint": "支持: openai, deepseek, gemini, zhipu, groq, qwen",
+        "default": "deepseek"
+    },
+    "ai_api_key": {
+        "description": "AI API 密钥",
+        "type": "string",
+        "hint": "用于新闻筛选和翻译的 AI 密钥",
+        "obvious_hint": true
+    },
+    "ai_api_base": {
+        "description": "AI API 地址",
+        "type": "string",
+        "hint": "可选，默认 https://api.openai.com/v1",
+        "default": ""
+    },
+    "ai_model": {
+        "description": "AI 模型",
+        "type": "string",
+        "hint": "可选，默认 deepseek-v4-flash",
+        "default": ""
+    },
+    "ai_translate_enabled": {
+        "description": "启用外媒翻译",
+        "type": "bool",
+        "hint": "将英文新闻翻译为中文",
+        "default": true
+    },
+    "http_proxy": {
+        "description": "HTTP 代理",
+        "type": "string",
+        "hint": "例如 http://127.0.0.1:7897，用于海外 RSS 采集",
+        "default": ""
+    },
+    "cron_expression": {
+        "description": "定时任务 Cron 表达式",
+        "type": "string",
+        "hint": "默认 0 6 * * *（每天 6:00）",
+        "default": "0 6 * * *"
+    },
+    "target_sessions": {
+        "description": "推送目标会话",
+        "type": "template_list",
+        "hint": "请优先在插件内置控制台的“推送”页选择会话；这里保留手动补充入口。",
+        "default": [],
+        "templates": {
+            "session": {
+                "name": "推送会话",
+                "items": {
+                    "note": {
+                        "description": "备注（仅用于标识）",
+                        "type": "string",
+                        "default": ""
+                    },
+                    "unified_msg_origin": {
+                        "description": "统一消息源标识（UMO）",
+                        "type": "string",
+                        "hint": "格式：aiocqhttp:GroupMessage:群号。",
+                        "default": ""
+                    }
+                }
+            }
+        }
+    },
+    "render_service_url": {
+        "description": "本地图片渲染服务地址",
+        "type": "string",
+        "hint": "NewsFlow Web 服务提供。Docker 中默认通过 host.docker.internal 访问宿主机。",
+        "default": "http://host.docker.internal:8000/api/render/newsletter"
+    }
+}

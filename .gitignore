@@ -1,0 +1,17 @@
+# Python bytecode and test cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local editor settings
+.vscode/
+.idea/
+
+# Local test artifacts
+test_minimal.py
+
+# Generated plugin data belongs in AstrBot's data directory.
+rendered_newsletters/
+
+# Bundled only by a future standalone distribution build.
+resource/

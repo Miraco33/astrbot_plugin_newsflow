@@ -1,0 +1,5 @@
+name: "astrbot_plugin_newsflow"
+display_name: "每日简报"
+desc: "自动采集新闻、AI 筛选、生成精美简报并推送至 QQ/Telegram"
+version: "1.0.0"
+author: "NewsFlow Team"
