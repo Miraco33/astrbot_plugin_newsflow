@@ -2,6 +2,8 @@
 
 This directory is the source and deployment directory of the NewsFlow AstrBot plugin. Its public Git repository is an archive of the AstrBot integration layer, not a standalone installable plugin.
 
+Core application source: [Shuyuxu211/NewsFlow](https://github.com/Shuyuxu211/NewsFlow).
+
 ## Runtime Boundary
 
 - This plugin owns AstrBot commands, scheduled push delivery, plugin configuration, and the Plugin Page.
