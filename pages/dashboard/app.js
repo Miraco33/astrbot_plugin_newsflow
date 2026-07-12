@@ -265,6 +265,10 @@ window.generateNewsletter = async function() {
     await startTask('generate-newsletter', '简报生成');
 };
 
+window.resendNewsletter = async function() {
+    await startTask('resend-newsletter', '简报补发');
+};
+
 window.previewNewsletter = async function(date) {
     try {
         const data = await bridge.apiGet('newsletters/' + date);

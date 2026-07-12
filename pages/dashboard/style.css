@@ -212,6 +212,7 @@ body {
 .btn-danger:hover { opacity: 0.85; }
 .btn-success { background: var(--success); color: var(--success-text); }
 .btn-success:hover { opacity: 0.85; }
+.action-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .toast {
     position: fixed;

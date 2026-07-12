@@ -15,6 +15,7 @@ import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.core.message.message_event_result import MessageChain
 
 # ---- sys.path 注入 ----
 # 1) 插件目录自身：使 bridge 子包可被 import
@@ -152,6 +153,8 @@ class NewsflowPlugin(Star):
         ctx.register_web_api(f"/{pn}/run-daily",         self._web_run_daily,            ["POST"], "执行每日任务")
         # 生成简报
         ctx.register_web_api(f"/{pn}/generate-newsletter",self._web_generate_newsletter,  ["POST"], "生成简报")
+        # 补发已有简报
+        ctx.register_web_api(f"/{pn}/resend-newsletter", self._web_resend_newsletter,    ["POST"], "补发今日简报")
         # 任务状态
         ctx.register_web_api(f"/{pn}/task/<task_id>",    self._web_task_status,          ["GET"],  "任务状态")
         # 定时推送目标
@@ -444,6 +447,46 @@ class NewsflowPlugin(Star):
         asyncio.create_task(do_generate())
         return self._jsonify({"status": "ok", "task_id": task_id, "message": "简报生成任务已启动"})
 
+    async def _web_resend_newsletter(self):
+        db_path = str(self.data_dir / "news.db")
+        task_id = _create_task("resend", db_path)
+
+        async def do_resend():
+            from src.storage.storage import NewsStorage
+
+            try:
+                tz = timezone(timedelta(hours=8))
+                date_str = datetime.now(tz).strftime("%Y-%m-%d")
+                _update_task(task_id, 10, f"正在读取 {date_str} 的简报...", db_path=db_path)
+                newsletter = NewsStorage().get_newsletter(date_str)
+                if not newsletter or not newsletter.get("content"):
+                    _update_task(
+                        task_id,
+                        100,
+                        f"补发失败：{date_str} 尚无简报。",
+                        {"reason": "newsletter_not_found"},
+                        "failed",
+                        db_path,
+                    )
+                    return
+
+                _update_task(task_id, 40, "正在渲染并发送简报图片...", db_path=db_path)
+                result = await self._send_newsletter_to_targets(
+                    newsletter["content"],
+                    date_str,
+                    self._count_newsletter_items(newsletter["content"]),
+                )
+                message = f"补发完成：已推送至 {result['sent']} 个目标"
+                if result["failed"]:
+                    message += f"，{len(result['failed'])} 个目标失败"
+                _update_task(task_id, 100, message, result, "completed", db_path)
+            except Exception as e:
+                logger.error("补发今日简报失败", exc_info=True)
+                _update_task(task_id, 100, f"补发失败：{e}", None, "failed", db_path)
+
+        asyncio.create_task(do_resend())
+        return self._jsonify({"status": "ok", "task_id": task_id, "message": "简报补发任务已启动"})
+
     # ==================== Handler: 任务状态 ====================
 
     async def _web_task_status(self, task_id):
@@ -488,26 +531,18 @@ class NewsflowPlugin(Star):
         date_str = stats.get("date", datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"))
         if html and self._target_sessions:
             try:
-                image_path = await self._render_newsletter_to_file(html, date_str)
+                result = await self._send_newsletter_to_targets(
+                    html,
+                    date_str,
+                    stats.get("filtered", 0),
+                )
+                logger.info(
+                    "[Cron] 简报推送完成：成功 %s 个，失败 %s 个",
+                    result["sent"],
+                    len(result["failed"]),
+                )
             except Exception as e:
-                logger.error(f"[Cron] 本地图片渲染失败，未执行推送: {e}", exc_info=True)
-                return
-
-            for target in self._target_sessions:
-                umo = target.get("unified_msg_origin")
-                if umo:
-                    try:
-                        sent = await self.context.send_message(
-                            umo,
-                            [
-                                Comp.Plain(f"每日简报 ({date_str}) · 精选 {stats.get('filtered', 0)} 条"),
-                                Comp.Image.fromFileSystem(str(image_path)),
-                            ],
-                        )
-                        if not sent:
-                            logger.error(f"推送到 {umo} 失败：未找到对应平台")
-                    except Exception as e:
-                        logger.error(f"推送到 {umo} 失败: {e}")
+                logger.error(f"[Cron] 简报推送失败: {e}", exc_info=True)
         elif html:
             logger.info("[Cron] 简报已生成（无推送目标）")
 
@@ -586,6 +621,41 @@ class NewsflowPlugin(Star):
 
     async def _render_newsletter_to_file(self, html: str, date_str: str) -> Path:
         return await asyncio.to_thread(self._render_newsletter_to_file_sync, html, date_str)
+
+    @staticmethod
+    def _count_newsletter_items(html: str) -> int:
+        return html.count('class="brief-card"') or html.count("class='brief-card'")
+
+    async def _send_newsletter_to_targets(self, html: str, date_str: str, news_count: int) -> dict:
+        if not self._target_sessions:
+            raise RuntimeError("未配置推送目标")
+
+        image_path = await self._render_newsletter_to_file(html, date_str)
+        result = {"sent": 0, "failed": []}
+        for target in self._target_sessions:
+            umo = str(target.get("unified_msg_origin", "")).strip()
+            if not umo:
+                continue
+            try:
+                sent = await self.context.send_message(
+                    umo,
+                    MessageChain([
+                        Comp.Plain(f"每日简报 ({date_str}) · 精选 {news_count} 条"),
+                        Comp.Image.fromFileSystem(str(image_path)),
+                    ]),
+                )
+                if sent:
+                    result["sent"] += 1
+                else:
+                    result["failed"].append({"umo": umo, "error": "未找到对应平台"})
+                    logger.error(f"推送到 {umo} 失败：未找到对应平台")
+            except Exception as e:
+                result["failed"].append({"umo": umo, "error": str(e)})
+                logger.error(f"推送到 {umo} 失败: {e}", exc_info=True)
+
+        if not result["sent"]:
+            raise RuntimeError("所有推送目标均发送失败")
+        return result
 
     async def _fetch_briefing(self, event: AstrMessageEvent, date_str: str | None = None):
         from src.storage.storage import NewsStorage

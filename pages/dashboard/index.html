@@ -71,7 +71,10 @@
             <div class="card">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
                     <h2>历史简报</h2>
-                    <button class="btn btn-primary" onclick="generateNewsletter()">生成今日简报</button>
+                    <div class="action-buttons">
+                        <button class="btn btn-secondary" onclick="resendNewsletter()">补发今日简报</button>
+                        <button class="btn btn-primary" onclick="generateNewsletter()">生成今日简报</button>
+                    </div>
                 </div>
                 <div id="newsletter-list"></div>
             </div>
