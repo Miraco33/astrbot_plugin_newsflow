@@ -8,8 +8,6 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
-from urllib.request import ProxyHandler, Request, build_opener
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
@@ -47,6 +45,7 @@ PLUGIN_NAME = "astrbot_plugin_newsflow"
 # ---- 任务状态追踪（内联，避免导入 app.py 触发 FastAPI 实例化） ----
 _task_status: dict = {}
 _task_db_table_created = False
+_playwright_install_lock = asyncio.Lock()
 
 def _init_task_table(storage_db_path: str):
     global _task_db_table_created
@@ -124,6 +123,9 @@ class NewsflowPlugin(Star):
 
         self._target_sessions = self.config.get("target_sessions", [])
         self._cron_job_id: str | None = None
+        self._render_playwright = None
+        self._render_browser = None
+        self._render_lock = asyncio.Lock()
 
         # 初始化任务表 + 注册 Plugin Pages Web API
         _init_task_table(str(self.data_dir / "news.db"))
@@ -584,32 +586,97 @@ class NewsflowPlugin(Star):
         yield event.plain_result(f"正在生成 {arg} 的本地高清简报图片…")
         asyncio.create_task(self._fetch_briefing(event, arg))
 
-    def _render_service_url(self) -> str:
-        url = str(self.config.get("render_service_url", "")).strip()
-        parsed = urlparse(url)
-        allowed_hosts = {"127.0.0.1", "localhost", "host.docker.internal", "::1"}
-        if parsed.scheme != "http" or parsed.hostname not in allowed_hosts:
-            raise RuntimeError("渲染服务地址必须是本机或宿主机 HTTP 地址")
-        return url
+    async def _ensure_render_browser(self):
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:
+            raise RuntimeError(
+                "图片渲染需要 Playwright，请先安装插件依赖"
+            ) from exc
 
-    def _render_newsletter_to_file_sync(self, html: str, date_str: str) -> Path:
-        payload = json.dumps({"content": html}, ensure_ascii=False).encode("utf-8")
-        request = Request(
-            self._render_service_url(),
-            data=payload,
-            headers={"Content-Type": "application/json", "Accept": "image/png"},
-            method="POST",
-        )
-        # News collection may require an outbound proxy, but the local renderer
-        # must connect directly to the host bridge instead of routing through it.
-        local_opener = build_opener(ProxyHandler({}))
-        with local_opener.open(request, timeout=60) as response:
-            content_type = response.headers.get_content_type()
-            image = response.read(20 * 1024 * 1024 + 1)
-        if content_type != "image/png" or not image.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise RuntimeError("本地渲染服务没有返回 PNG 图片")
+        async with _playwright_install_lock:
+            if self._render_browser is not None and self._render_browser.is_connected():
+                return self._render_browser
+
+            if self._render_playwright is not None:
+                try:
+                    await self._render_playwright.stop()
+                except Exception:
+                    pass
+                self._render_playwright = None
+
+            playwright = await async_playwright().start()
+            executable_path = Path(playwright.chromium.executable_path)
+            if not executable_path.is_file():
+                logger.info(
+                    "共享 Playwright Chromium 不存在，开始安装到 %s",
+                    os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "默认缓存目录"),
+                )
+                process = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-m",
+                    "playwright",
+                    "install",
+                    "chromium",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=os.environ.copy(),
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(), timeout=300
+                    )
+                except asyncio.TimeoutError as exc:
+                    process.kill()
+                    await process.wait()
+                    await playwright.stop()
+                    raise RuntimeError("Playwright Chromium 安装超时") from exc
+
+                if process.returncode != 0 or not executable_path.is_file():
+                    details = (stderr or stdout).decode("utf-8", errors="replace")[-2000:]
+                    await playwright.stop()
+                    raise RuntimeError(f"Playwright Chromium 安装失败: {details}")
+
+            try:
+                browser = await playwright.chromium.launch(headless=True)
+            except Exception:
+                await playwright.stop()
+                raise
+
+            self._render_playwright = playwright
+            self._render_browser = browser
+            logger.info("NewsFlow 图片渲染浏览器已就绪: %s", executable_path)
+            return browser
+
+    async def _render_newsletter_to_file(self, html: str, date_str: str) -> Path:
+        if not html or len(html) > 2_000_000:
+            raise ValueError("简报内容为空或超过渲染大小限制")
+
+        browser = await self._ensure_render_browser()
+        async with self._render_lock:
+            page = await browser.new_page(
+                viewport={"width": 540, "height": 800},
+                device_scale_factor=2,
+                color_scheme="light",
+            )
+            try:
+                await page.set_content(html, wait_until="load", timeout=45_000)
+                await page.evaluate(
+                    "document.fonts ? document.fonts.ready : Promise.resolve()"
+                )
+                image = await page.screenshot(
+                    type="png",
+                    full_page=True,
+                    animations="disabled",
+                    timeout=45_000,
+                )
+            finally:
+                await page.close()
+
         if len(image) > 20 * 1024 * 1024:
             raise RuntimeError("渲染图片超过 20 MB 限制")
+        if not image.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RuntimeError("Playwright 没有返回 PNG 图片")
 
         output_dir = self.data_dir / "rendered_newsletters"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -618,9 +685,6 @@ class NewsflowPlugin(Star):
         temporary_path.write_bytes(image)
         temporary_path.replace(image_path)
         return image_path
-
-    async def _render_newsletter_to_file(self, html: str, date_str: str) -> Path:
-        return await asyncio.to_thread(self._render_newsletter_to_file_sync, html, date_str)
 
     @staticmethod
     def _count_newsletter_items(html: str) -> int:
@@ -713,4 +777,16 @@ class NewsflowPlugin(Star):
                 logger.info(f"已清理 cron job: {self._cron_job_id}")
             except Exception as e:
                 logger.warning(f"清理 cron job 失败: {e}")
+        if self._render_browser is not None:
+            try:
+                await self._render_browser.close()
+            except Exception:
+                pass
+            self._render_browser = None
+        if self._render_playwright is not None:
+            try:
+                await self._render_playwright.stop()
+            except Exception:
+                pass
+            self._render_playwright = None
         logger.info("NewsFlow 插件已卸载")

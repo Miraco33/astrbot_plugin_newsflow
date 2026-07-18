@@ -1,8 +1,8 @@
 {
     "ai_provider": {
-        "description": "AI 提供商",
+        "description": "AI 提供商（DeepSeek-first）",
         "type": "string",
-        "hint": "支持: openai, deepseek, gemini, zhipu, groq, qwen",
+        "hint": "deepseek 为当前唯一经过生产验证的模式；openai/qwen/gemini/zhipu/groq 为实验性兼容入口。",
         "default": "deepseek"
     },
     "ai_api_key": {
@@ -14,13 +14,13 @@
     "ai_api_base": {
         "description": "AI API 地址",
         "type": "string",
-        "hint": "可选，默认 https://api.openai.com/v1",
+        "hint": "可选。DeepSeek 留空时使用官方兼容端点；其他提供商需填写对应 API Base。",
         "default": ""
     },
     "ai_model": {
         "description": "AI 模型",
         "type": "string",
-        "hint": "可选，默认 deepseek-v4-flash",
+        "hint": "可选。DeepSeek 留空时使用当前默认模型；其他模型必须自行验证 JSON、上下文、限流和内容策略兼容性。",
         "default": ""
     },
     "ai_translate_enabled": {
@@ -64,11 +64,5 @@
                 }
             }
         }
-    },
-    "render_service_url": {
-        "description": "本地图片渲染服务地址",
-        "type": "string",
-        "hint": "NewsFlow Web 服务提供。Docker 中默认通过 host.docker.internal 访问宿主机。",
-        "default": "http://host.docker.internal:8000/api/render/newsletter"
     }
 }

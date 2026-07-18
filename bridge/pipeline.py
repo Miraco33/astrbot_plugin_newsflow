@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -42,7 +43,12 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
         ai_filter = AIFilter()
         all_news = storage.get_news(limit=200)
         filtered = ai_filter.filter_news(all_news)
-        logger.info(f"筛选完成: {len(all_news)} 条中筛选出 {len(filtered)} 条")
+        selection_topics = dict(Counter(item.get("topic", "其他") for item in filtered))
+        selection_sources = dict(Counter(item.get("source", "未知") for item in filtered))
+        logger.info(
+            f"筛选完成: {len(all_news)} 条中筛选出 {len(filtered)} 条, "
+            f"分类={selection_topics}, 来源={selection_sources}"
+        )
     except Exception as e:
         logger.error(f"AI 筛选失败: {e}")
         return (None, None, {"error": f"筛选新闻失败: {e}", "reason": "filter_failed"})
@@ -77,8 +83,8 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
     except Exception as e:
         logger.error(f"翻译失败（非致命）: {e}")
 
-    # 注：_two_round_filter() 内部已包含 _deduplicate_similar + _event_deduplicate，
-    # 此处不再重复去重，避免二次裁减导致简报条目过少。
+    # 核心筛选器已经完成文章/事件去重、故事上限、分类配额和来源上限。
+    # 翻译后不得再次按标题文本去重；NewsletterGenerator 成功落库后才记录事件记忆。
     html = None
     path = None
     try:
@@ -154,6 +160,8 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
         "filtered": len(filtered),
         "cleaned": deleted_count,
         "date": date_str,
+        "topics": selection_topics,
+        "sources": selection_sources,
     }
 
     logger.info(f"流水线完成: 采集 {len(news_list)} 条, 保存 {saved_count} 条, 筛选 {len(filtered)} 条")
