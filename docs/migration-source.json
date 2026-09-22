@@ -1,0 +1,22 @@
+{
+  "core_repository": "https://github.com/Shuyuxu211/NewsFlow",
+  "core_base_commit": "d714238ce0aaab6e9c789e040a8a8351cec77e8a",
+  "adapter_base_commit": "3b3bafdee56c6655a694401fb7ba0a5384400ba7",
+  "note": "Core includes audited working-tree fixes deployed through 2026-09-22. Hashes identify exact pre-migration files.",
+  "core_files_sha256": {
+    "src/cli/cli.py": "09a2de9e72930f19a833f8dfeb255f611883e0b9c4d039bae0dda77729860f5e",
+    "src/collector/collector.py": "c4539379c50e2b1b8c39d88f39b6f6ddef6ff8360441111d0239cd96c6fda2bb",
+    "src/config/config.py": "f4b6e203565570d36a8cae0d36493b64adbc426c8e893328c34b2d47d49bea87",
+    "src/filter/filter.py": "534167b38f0f31303072269b19e52fa3fb807277dc24850f3219a45c73511062",
+    "src/filter/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/newsletter/newsletter.py": "53184e7f4fb1646435c3ad73b91fbc324bd1d42392201081bd6d2478972b6eae",
+    "src/newsletter/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/notifier/notifier.py": "9528bb07ddcbae06e43421e448996b3ae8c782f6ec055c0d57486298d4f0dee1",
+    "src/notifier/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/scheduler/scheduler.py": "8f2d5681596996cec5ddf05ea947707f7b3ff04303032cf55ccaea743cacbd6f",
+    "src/storage/storage.py": "03beee0c478835d23b3d4fc6a7591b24e2fd59561690f42b1657280338e10cd2",
+    "src/web/app.py": "4e1551f70e8acad6d90d45b88e3046f9c07ebf9e9866e2f345fb6ddf74099cf2",
+    "src/web/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/web/static/index.html": "736b78754b0d29e57f71102910bc4310f1907d099996bc03f844343b080856af"
+  }
+}

@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>每日新闻流管理系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: #f0f2f5; color: #333; }
+        .nav { background: #1a1a2e; color: white; padding: 0 24px; display: flex; align-items: center; height: 56px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); position: sticky; top: 0; z-index: 100; }
+        .nav h1 { font-size: 18px; font-weight: 600; }
+        .nav .actions { margin-left: auto; display: flex; gap: 8px; }
+        .nav button { background: rgba(255,255,255,0.15); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+        .nav button:hover { background: rgba(255,255,255,0.25); }
+        .nav button.primary { background: #4a6fa5; }
+        .nav button.primary:hover { background: #3d5f8f; }
+        .nav button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .container { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+        .tabs { display: flex; gap: 4px; margin-bottom: 20px; background: white; border-radius: 10px; padding: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow-x: auto; }
+        .tab { padding: 10px 16px; border: none; background: none; cursor: pointer; border-radius: 8px; font-size: 14px; color: #666; white-space: nowrap; }
+        .tab.active { background: #1a1a2e; color: white; }
+        .tab:hover:not(.active) { background: #f5f5f5; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+        .card { background: white; border-radius: 12px; padding: 24px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .card h2 { font-size: 16px; margin-bottom: 16px; color: #1a1a2e; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 24px; }
+        .stat { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+        .stat .label { font-size: 12px; color: #888; margin-bottom: 4px; }
+        .stat .value { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+        .stat .value.small { font-size: 14px; font-weight: 500; }
+        .category-section { margin-bottom: 24px; }
+        .category-header { font-size: 16px; font-weight: 600; color: #1a1a2e; padding: 12px 0; border-bottom: 2px solid #e8e8e8; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        .category-header .count { font-size: 13px; color: #888; font-weight: 400; }
+        .news-item { padding: 14px 0; border-bottom: 1px solid #f0f0f0; }
+        .news-item:last-child { border-bottom: none; }
+        .news-item h3 { font-size: 15px; margin-bottom: 4px; }
+        .news-item h3 a { color: #1a1a2e; text-decoration: none; }
+        .news-item h3 a:hover { color: #4a6fa5; }
+        .news-item .original { font-size: 12px; color: #999; font-style: italic; margin-bottom: 4px; }
+        .news-item .meta { font-size: 12px; color: #888; margin-bottom: 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .news-item .summary { font-size: 13px; color: #555; line-height: 1.6; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+        .badge-include { background: #e8f5e9; color: #2e7d32; }
+        .badge-exclude { background: #ffebee; color: #c62828; }
+        .badge-source { background: #e3f2fd; color: #1565c0; }
+        .badge-category { background: #f3e5f5; color: #7b1fa2; }
+        .badge-translated { background: #fff3e0; color: #e65100; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px 8px; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+        th { color: #888; font-weight: 500; font-size: 13px; }
+        .btn { padding: 6px 14px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        .btn-danger { background: #ffebee; color: #c62828; }
+        .btn-danger:hover { background: #ffcdd2; }
+        .btn-primary { background: #4a6fa5; color: white; }
+        .btn-primary:hover { background: #3d5f8f; }
+        .btn-success { background: #e8f5e9; color: #2e7d32; }
+        .btn-success:hover { background: #c8e6c9; }
+        .btn-warning { background: #fff3e0; color: #e65100; }
+        .btn-warning:hover { background: #ffe0b2; }
+        .form-row { display: flex; gap: 12px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+        .form-row label { min-width: 100px; font-size: 14px; color: #555; }
+        .form-row input, .form-row select, .form-row textarea { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; min-width: 200px; }
+        .form-row input:focus, .form-row select:focus, .form-row textarea:focus { outline: none; border-color: #4a6fa5; }
+        .source-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+        .source-card { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 16px; }
+        .source-card .name { font-weight: 600; margin-bottom: 4px; }
+        .source-card .url { font-size: 12px; color: #888; word-break: break-all; }
+        .source-card .info { font-size: 12px; color: #666; margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+        .source-card .enabled { color: #2e7d32; }
+        .source-card .disabled { color: #c62828; }
+        .newsletter-item { padding: 12px 0; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; align-items: center; }
+        .newsletter-item:last-child { border-bottom: none; }
+        .newsletter-item .info h3 { font-size: 15px; margin-bottom: 2px; }
+        .newsletter-item .info p { font-size: 12px; color: #888; }
+        .toast { position: fixed; top: 70px; right: 24px; background: #1a1a2e; color: white; padding: 12px 24px; border-radius: 8px; font-size: 14px; z-index: 1000; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.2); max-width: 400px; }
+        .config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+        .config-item { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 16px; }
+        .config-item .key { font-size: 12px; color: #888; margin-bottom: 4px; }
+        .config-item .val { font-size: 14px; font-weight: 500; word-break: break-all; }
+        .empty { text-align: center; padding: 20px; color: #888; }
+        .action-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+        .action-bar select, .action-bar input { padding: 6px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+        .daily-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+        .daily-stat { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 12px; text-align: center; }
+        .daily-stat .date { font-size: 14px; font-weight: 600; color: #1a1a2e; }
+        .daily-stat .count { font-size: 20px; font-weight: 700; color: #4a6fa5; }
+        .daily-stat .sources { font-size: 11px; color: #888; margin-top: 4px; }
+        .task-bar { background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; display: none; }
+        .task-bar.active { display: flex; align-items: center; gap: 12px; }
+        .task-bar .progress-wrap { flex: 1; }
+        .task-bar .progress-text { font-size: 13px; color: #333; margin-bottom: 4px; }
+        .task-bar .progress-track { background: #e0e0e0; border-radius: 4px; height: 6px; overflow: hidden; }
+        .task-bar .progress-fill { background: #4a6fa5; height: 100%; border-radius: 4px; transition: width 0.3s; }
+        .task-bar.done { background: #e8f5e9; border-color: #c8e6c9; }
+        .task-bar.failed { background: #ffebee; border-color: #ffcdd2; }
+    </style>
+</head>
+<body>
+    <div class="nav">
+        <h1>📰 每日新闻流</h1>
+        <div class="actions">
+            <button onclick="collectNews()" id="btn-collect">📥 采集</button>
+            <button onclick="translateNews()" id="btn-translate">🌐 翻译</button>
+            <button onclick="filterAndGenerate()" id="btn-filter">📋 筛选+生成简报</button>
+            <button class="primary" onclick="runDaily()" id="btn-daily">⚡ 执行每日任务</button>
+        </div>
+    </div>
+    <div class="container">
+        <div id="toast" class="toast"></div>
+        <div id="task-bar" class="task-bar">
+            <div class="progress-wrap">
+                <div class="progress-text" id="task-message">准备中...</div>
+                <div class="progress-track"><div class="progress-fill" id="task-progress" style="width:0%"></div></div>
+            </div>
+        </div>
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('dashboard')">概览</button>
+            <button class="tab" onclick="switchTab('news')">新闻流</button>
+            <button class="tab" onclick="switchTab('history')">历史查询</button>
+            <button class="tab" onclick="switchTab('rules')">筛选规则</button>
+            <button class="tab" onclick="switchTab('sources')">新闻源</button>
+            <button class="tab" onclick="switchTab('ai')">AI配置</button>
+            <button class="tab" onclick="switchTab('email')">邮件推送</button>
+            <button class="tab" onclick="switchTab('newsletters')">简报</button>
+            <button class="tab" onclick="switchTab('system')">系统</button>
+        </div>
+
+        <div id="panel-dashboard" class="panel active">
+            <div class="stats" id="stats"></div>
+            <div class="card">
+                <h2>分类概览</h2>
+                <div id="category-overview"></div>
+            </div>
+            <div class="card">
+                <h2>最近新闻</h2>
+                <div id="recent-news"></div>
+            </div>
+        </div>
+
+        <div id="panel-news" class="panel">
+            <div class="card">
+                <div class="action-bar">
+                    <select id="news-category-filter" onchange="newsPage=0;loadNews()">
+                        <option value="">全部分类</option>
+                    </select>
+                    <select id="news-source-filter" onchange="newsPage=0;loadNews()">
+                        <option value="">全部来源</option>
+                    </select>
+                    <input type="number" id="news-limit" value="50" min="1" max="200" style="max-width:80px" onchange="newsPage=0;loadNews()">
+                    <span style="font-size:12px;color:#888">条/页</span>
+                </div>
+                <div id="news-list"></div>
+                <div id="news-pagination" style="display:flex;justify-content:center;gap:12px;margin-top:16px"></div>
+            </div>
+        </div>
+
+        <div id="panel-history" class="panel">
+            <div class="card">
+                <h2>历史数据查询</h2>
+                <div class="form-row">
+                    <label>开始日期</label>
+                    <input type="date" id="history-start">
+                </div>
+                <div class="form-row">
+                    <label>结束日期</label>
+                    <input type="date" id="history-end">
+                </div>
+                <div class="form-row">
+                    <label>分类</label>
+                    <select id="history-category"><option value="">全部</option></select>
+                </div>
+                <div class="form-row">
+                    <label>来源</label>
+                    <select id="history-source"><option value="">全部</option></select>
+                </div>
+                <button class="btn btn-primary" onclick="searchHistory()">查询</button>
+            </div>
+            <div class="card">
+                <h2>每日采集统计</h2>
+                <div id="daily-stats" class="daily-stats"></div>
+            </div>
+            <div class="card">
+                <h2>查询结果</h2>
+                <div id="history-results"></div>
+            </div>
+        </div>
+
+        <div id="panel-rules" class="panel">
+            <div class="card">
+                <h2>添加筛选规则</h2>
+                <div class="form-row">
+                    <label>规则名称</label>
+                    <input type="text" id="rule-name" placeholder="如：关注AI">
+                </div>
+                <div class="form-row">
+                    <label>类型</label>
+                    <select id="rule-type">
+                        <option value="include">关注（包含）</option>
+                        <option value="exclude">排除</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>关键词/话题</label>
+                    <input type="text" id="rule-value" placeholder="如：人工智能、AI">
+                </div>
+                <div class="form-row">
+                    <label>优先级</label>
+                    <input type="number" id="rule-priority" value="1" min="1" max="10">
+                </div>
+                <button class="btn btn-primary" onclick="addRule()">添加规则</button>
+            </div>
+            <div class="card">
+                <h2>当前规则</h2>
+                <table>
+                    <thead><tr><th>名称</th><th>类型</th><th>关键词</th><th>优先级</th><th>操作</th></tr></thead>
+                    <tbody id="rules-list"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="panel-sources" class="panel">
+            <div class="card">
+                <h2>新闻源配置</h2>
+                <p style="font-size:13px;color:#888;margin-bottom:16px">新闻源在 config.py 中配置，此处展示当前配置</p>
+                <div class="source-list" id="source-list"></div>
+            </div>
+        </div>
+
+        <div id="panel-ai" class="panel">
+            <div class="card">
+                <h2>AI 配置</h2>
+                <div class="form-row">
+                    <label>AI 提供商</label>
+                    <select id="ai-provider">
+                        <option value="openai">OpenAI</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="gemini">Google Gemini</option>
+                        <option value="zhipu">智谱 GLM</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <label>API Key</label>
+                    <input type="password" id="ai-api-key" placeholder="输入 API Key">
+                </div>
+                <div class="form-row">
+                    <label>API Base URL</label>
+                    <input type="text" id="ai-api-base" placeholder="API 基础地址">
+                </div>
+                <div class="form-row">
+                    <label>模型名称</label>
+                    <input type="text" id="ai-model" placeholder="如 gpt-4o-mini, deepseek-chat, gemini-2.0-flash">
+                </div>
+                <div class="form-row">
+                    <label>翻译功能</label>
+                    <select id="ai-translate">
+                        <option value="true">启用</option>
+                        <option value="false">禁用</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="saveAIConfig()">保存配置</button>
+            </div>
+            <div class="card">
+                <h2>当前 AI 状态</h2>
+                <div class="config-grid" id="ai-status"></div>
+            </div>
+        </div>
+
+        <div id="panel-email" class="panel">
+            <div class="card">
+                <h2>邮件推送配置</h2>
+                <div class="form-row">
+                    <label>SMTP 服务器</label>
+                    <input type="text" id="email-smtp-host" placeholder="如 smtp.qq.com">
+                </div>
+                <div class="form-row">
+                    <label>SMTP 端口</label>
+                    <input type="number" id="email-smtp-port" value="465">
+                </div>
+                <div class="form-row">
+                    <label>SMTP 用户名</label>
+                    <input type="text" id="email-smtp-user" placeholder="邮箱地址">
+                </div>
+                <div class="form-row">
+                    <label>SMTP 密码</label>
+                    <input type="password" id="email-smtp-password" placeholder="授权码">
+                </div>
+                <div class="form-row">
+                    <label>发件人</label>
+                    <input type="text" id="email-sender" placeholder="发件人邮箱">
+                </div>
+                <div class="form-row">
+                    <label>收件人</label>
+                    <input type="text" id="email-recipients" placeholder="多个收件人用逗号分隔">
+                </div>
+                <div class="form-row">
+                    <label>使用 SSL</label>
+                    <select id="email-use-ssl">
+                        <option value="true">是</option>
+                        <option value="false">否</option>
+                    </select>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-primary" onclick="saveEmailConfig()">保存配置</button>
+                    <button class="btn btn-success" onclick="testEmail()">发送测试邮件</button>
+                </div>
+            </div>
+            <div class="card">
+                <h2>当前邮件状态</h2>
+                <div class="config-grid" id="email-status"></div>
+            </div>
+        </div>
+
+        <div id="panel-newsletters" class="panel">
+            <div class="card">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                    <h2>历史简报</h2>
+                    <button class="btn btn-primary" onclick="generateNewsletter()">生成今日简报</button>
+                </div>
+                <div id="newsletter-list"></div>
+            </div>
+        </div>
+
+        <div id="panel-system" class="panel">
+            <div class="card">
+                <h2>系统信息</h2>
+                <div class="config-grid" id="system-info"></div>
+            </div>
+            <div class="card">
+                <h2>快捷操作</h2>
+                <div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <button class="btn btn-primary" onclick="collectNews()">📥 采集新闻</button>
+                    <button class="btn btn-success" onclick="translateNews()">🌐 翻译外媒</button>
+                    <button class="btn btn-warning" onclick="filterAndGenerate()">📋 筛选+生成简报</button>
+                    <button class="btn btn-primary" onclick="runDaily()">⚡ 执行每日任务</button>
+                    <button class="btn btn-danger" onclick="cleanNews()">🗑️ 清理旧新闻</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+const API = '';
+let currentTaskId = null;
+let taskPollTimer = null;
+
+function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    setTimeout(() => t.style.display = 'none', 3000);
+}
+
+async function api(path, method = 'GET', body = null) {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(API + path, opts);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+}
+
+function setButtonsDisabled(disabled) {
+    ['btn-collect', 'btn-translate', 'btn-filter', 'btn-daily'].forEach(id => {
+        document.getElementById(id).disabled = disabled;
+    });
+}
+
+function showTaskBar(message, progress) {
+    const bar = document.getElementById('task-bar');
+    bar.className = 'task-bar active';
+    document.getElementById('task-message').textContent = message;
+    document.getElementById('task-progress').style.width = progress + '%';
+}
+
+function hideTaskBar() {
+    document.getElementById('task-bar').className = 'task-bar';
+}
+
+function completeTaskBar(message) {
+    const bar = document.getElementById('task-bar');
+    bar.className = 'task-bar active done';
+    document.getElementById('task-message').textContent = message;
+    document.getElementById('task-progress').style.width = '100%';
+    setTimeout(() => hideTaskBar(), 5000);
+}
+
+function failTaskBar(message) {
+    const bar = document.getElementById('task-bar');
+    bar.className = 'task-bar active failed';
+    document.getElementById('task-message').textContent = message;
+    setTimeout(() => hideTaskBar(), 8000);
+}
+
+async function pollTask(taskId) {
+    if (taskPollTimer) clearInterval(taskPollTimer);
+    setButtonsDisabled(true);
+    let pollCount = 0;
+
+    taskPollTimer = setInterval(async () => {
+        pollCount++;
+        try {
+            const task = await api(`/api/task/${taskId}`);
+            showTaskBar(task.message, task.progress);
+
+            if (task.status === 'completed') {
+                clearInterval(taskPollTimer);
+                taskPollTimer = null;
+                setButtonsDisabled(false);
+                completeTaskBar(task.message);
+                loadDashboard();
+            } else if (task.status === 'failed') {
+                clearInterval(taskPollTimer);
+                taskPollTimer = null;
+                setButtonsDisabled(false);
+                failTaskBar(task.message);
+            }
+        } catch (e) {
+            clearInterval(taskPollTimer);
+            taskPollTimer = null;
+            setButtonsDisabled(false);
+            failTaskBar('任务状态丢失（服务可能已重启），请重试');
+        }
+    }, 1500);
+}
+
+async function startTask(apiPath, taskName) {
+    showTaskBar(`${taskName}任务启动中...`, 5);
+    const r = await api(apiPath, 'POST');
+    if (r.task_id) {
+        currentTaskId = r.task_id;
+        pollTask(r.task_id);
+    } else {
+        toast(r.message || '任务启动失败');
+        hideTaskBar();
+    }
+}
+
+function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById('panel-' + name).classList.add('active');
+    const loaders = {
+        dashboard: loadDashboard, news: loadNews, history: loadHistory,
+        rules: loadRules, sources: loadSources, ai: loadAIConfig,
+        email: loadEmailConfig, newsletters: loadNewsletters, system: loadSystem
+    };
+    if (loaders[name]) loaders[name]();
+}
+
+function renderNewsItem(n) {
+    const translated = n.translated ? `<span class="badge badge-translated">已翻译</span>` : '';
+    const originalTitle = n.title_original ? `<div class="original">原文: ${n.title_original}</div>` : '';
+    const isExternalLink = /^https?:\/\//i.test(n.link || '');
+    const titleHtml = isExternalLink
+        ? `<a href="${n.link}" target="_blank" rel="noopener">${n.title}</a>`
+        : n.title;
+    return `
+        <div class="news-item">
+            <h3>${titleHtml}</h3>
+            ${originalTitle}
+            <div class="meta">
+                <span class="badge badge-source">${n.source}</span>
+                <span class="badge badge-category">${n.category || '未分类'}</span>
+                ${translated}
+                <span>${n.published || ''}</span>
+            </div>
+            <p class="summary">${(n.summary || '').substring(0, 200)}${(n.summary || '').length > 200 ? '...' : ''}</p>
+        </div>
+    `;
+}
+
+async function loadDashboard() {
+    const s = await api('/api/status');
+    document.getElementById('stats').innerHTML = `
+        <div class="stat"><div class="label">新闻总数</div><div class="value">${s.news_count}</div></div>
+        <div class="stat"><div class="label">筛选规则</div><div class="value">${s.rules_count}</div></div>
+        <div class="stat"><div class="label">历史简报</div><div class="value">${s.newsletters_count}</div></div>
+        <div class="stat"><div class="label">已翻译</div><div class="value">${s.translated_count}</div></div>
+        <div class="stat"><div class="label">AI提供商</div><div class="value small">${s.ai_provider || '未配置'}</div></div>
+        <div class="stat"><div class="label">AI状态</div><div class="value small">${s.ai_configured ? '✅' : '❌'}</div></div>
+        <div class="stat"><div class="label">邮件推送</div><div class="value small">${s.email_configured ? '✅' : '❌'}</div></div>
+    `;
+    const catStats = s.category_stats || {};
+    const catOrder = ['中文', '财经', '科技', '英文', '未分类'];
+    let catHtml = '<div style="display:flex;gap:12px;flex-wrap:wrap">';
+    for (const cat of [...catOrder, ...Object.keys(catStats).filter(c => !catOrder.includes(c))]) {
+        if (catStats[cat]) catHtml += `<span class="badge badge-category" style="font-size:14px;padding:6px 12px">${cat}: ${catStats[cat]}条</span>`;
+    }
+    catHtml += '</div>';
+    document.getElementById('category-overview').innerHTML = catHtml;
+    const newsData = await api('/api/news?limit=5');
+    const news = newsData.news || [];
+    document.getElementById('recent-news').innerHTML = news.map(n => renderNewsItem(n)).join('');
+}
+
+let newsPage = 0;
+
+async function loadNews() {
+    const category = document.getElementById('news-category-filter').value;
+    const source = document.getElementById('news-source-filter').value;
+    const limit = parseInt(document.getElementById('news-limit').value) || 50;
+    const offset = newsPage * limit;
+
+    let url = `/api/news?limit=${limit}&offset=${offset}`;
+    if (category) url += `&category=${encodeURIComponent(category)}`;
+    if (source) url += `&source=${encodeURIComponent(source)}`;
+
+    const data = await api(url);
+    const news = data.news || data;
+    const total = data.total || news.length;
+
+    const grouped = {};
+    const catOrder = ['中文', '财经', '科技', '英文', '未分类'];
+    for (const n of news) { const cat = n.category || '未分类'; if (!grouped[cat]) grouped[cat] = []; grouped[cat].push(n); }
+    let html = `<p style="margin-bottom:12px;color:#888">共 ${total} 条新闻，当前显示第 ${offset+1}-${Math.min(offset+limit, total)} 条</p>`;
+    for (const cat of [...catOrder, ...Object.keys(grouped).filter(c => !catOrder.includes(c))]) {
+        if (!grouped[cat]) continue;
+        html += `<div class="category-section"><div class="category-header">${cat} <span class="count">${grouped[cat].length}条</span></div>${grouped[cat].map(n => renderNewsItem(n)).join('')}</div>`;
+    }
+    document.getElementById('news-list').innerHTML = html || '<div class="empty">暂无新闻</div>';
+
+    const totalPages = Math.ceil(total / limit);
+    let pagHtml = '';
+    if (newsPage > 0) pagHtml += `<button class="btn btn-primary btn-sm" onclick="newsPage--;loadNews()">上一页</button>`;
+    pagHtml += `<span style="font-size:13px;color:#888">第 ${newsPage+1}/${totalPages} 页</span>`;
+    if (newsPage < totalPages - 1) pagHtml += `<button class="btn btn-primary btn-sm" onclick="newsPage++;loadNews()">下一页</button>`;
+    document.getElementById('news-pagination').innerHTML = pagHtml;
+}
+
+async function loadHistory() {
+    const dailyStats = await api('/api/news/daily-stats?days=14');
+    document.getElementById('daily-stats').innerHTML = dailyStats.length ? dailyStats.map(d => `
+        <div class="daily-stat"><div class="date">${d.date}</div><div class="count">${d.count}条</div><div class="sources">${(d.sources || '').substring(0, 40)}</div></div>
+    `).join('') : '<div class="empty">暂无数据</div>';
+
+    const catData = await api('/api/news/categories');
+    const catSel = document.getElementById('history-category');
+    if (catSel.options.length <= 1) {
+        for (const cat of (catData.order || [])) { catSel.innerHTML += `<option value="${cat}">${cat}</option>`; }
+    }
+    const sources = await api('/api/news-sources');
+    const srcSel = document.getElementById('history-source');
+    if (srcSel.options.length <= 1) {
+        for (const s of sources) { srcSel.innerHTML += `<option value="${s.name}">${s.name}</option>`; }
+    }
+}
+
+async function searchHistory() {
+    const start = document.getElementById('history-start').value;
+    const end = document.getElementById('history-end').value;
+    if (!start || !end) { toast('请选择日期范围'); return; }
+    const cat = document.getElementById('history-category').value;
+    const src = document.getElementById('history-source').value;
+    let url = `/api/news/search?start_date=${start}&end_date=${end}&limit=200`;
+    if (cat) url += `&category=${encodeURIComponent(cat)}`;
+    if (src) url += `&source=${encodeURIComponent(src)}`;
+    const news = await api(url);
+    const grouped = {};
+    const catOrder = ['中文', '财经', '科技', '英文', '未分类'];
+    for (const n of news) { const c = n.category || '未分类'; if (!grouped[c]) grouped[c] = []; grouped[c].push(n); }
+    let html = `<p style="margin-bottom:12px;color:#888">共 ${news.length} 条结果</p>`;
+    for (const cat of [...catOrder, ...Object.keys(grouped).filter(c => !catOrder.includes(c))]) {
+        if (!grouped[cat]) continue;
+        html += `<div class="category-section"><div class="category-header">${cat} <span class="count">${grouped[cat].length}条</span></div>${grouped[cat].map(n => renderNewsItem(n)).join('')}</div>`;
+    }
+    document.getElementById('history-results').innerHTML = html || '<div class="empty">未找到新闻</div>';
+}
+
+async function loadRules() {
+    const rules = await api('/api/filter-rules');
+    document.getElementById('rules-list').innerHTML = rules.map(r => `
+        <tr><td>${r.name}</td><td><span class="badge ${r.type === 'include' ? 'badge-include' : 'badge-exclude'}">${r.type === 'include' ? '关注' : '排除'}</span></td><td>${r.value}</td><td>${r.priority}</td><td><button class="btn btn-sm btn-danger" onclick="deleteRule(${r.id})">删除</button></td></tr>
+    `).join('') || '<tr><td colspan="5" class="empty">暂无规则</td></tr>';
+}
+
+async function addRule() {
+    const name = document.getElementById('rule-name').value;
+    const type = document.getElementById('rule-type').value;
+    const value = document.getElementById('rule-value').value;
+    const priority = parseInt(document.getElementById('rule-priority').value) || 1;
+    if (!name || !value) { toast('请填写规则名称和关键词'); return; }
+    await api('/api/filter-rules', 'POST', { name, type, value, priority });
+    toast('规则已添加');
+    document.getElementById('rule-name').value = '';
+    document.getElementById('rule-value').value = '';
+    loadRules();
+}
+
+async function deleteRule(id) {
+    await api(`/api/filter-rules/${id}`, 'DELETE');
+    toast('规则已删除');
+    loadRules();
+}
+
+async function loadSources() {
+    const sources = await api('/api/news-sources');
+    document.getElementById('source-list').innerHTML = sources.map(s => `
+        <div class="source-card"><div class="name">${s.name}</div><div class="url">${s.url}</div><div class="info"><span class="${s.enabled ? 'enabled' : 'disabled'}">${s.enabled ? '✅ 启用' : '❌ 禁用'}</span><span class="badge badge-category">${s.category}</span><span>${s.mode === 'scrape' ? '🕷️ 网页抓取' : '📡 RSS'}</span></div></div>
+    `).join('');
+}
+
+async function loadAIConfig() {
+    const config = await api('/api/ai-config');
+    document.getElementById('ai-provider').value = config.provider || 'openai';
+    document.getElementById('ai-api-key').value = '';
+    document.getElementById('ai-api-key').placeholder = config.api_key_set ? '已设置（留空保持不变）' : '输入 API Key';
+    document.getElementById('ai-api-base').value = config.api_base || '';
+    document.getElementById('ai-model').value = config.model || '';
+    document.getElementById('ai-translate').value = config.translate_enabled ? 'true' : 'false';
+    document.getElementById('ai-status').innerHTML = `
+        <div class="config-item"><div class="key">提供商</div><div class="val">${config.provider || '未设置'}</div></div>
+        <div class="config-item"><div class="key">API Key</div><div class="val">${config.api_key_set ? '✅ 已设置' : '❌ 未设置'}</div></div>
+        <div class="config-item"><div class="key">API Base</div><div class="val">${config.api_base || '默认'}</div></div>
+        <div class="config-item"><div class="key">模型</div><div class="val">${config.model || '默认'}</div></div>
+        <div class="config-item"><div class="key">翻译功能</div><div class="val">${config.translate_enabled ? '✅ 启用' : '❌ 禁用'}</div></div>
+        <div class="config-item"><div class="key">状态</div><div class="val">${config.is_configured ? '✅ 可用' : '❌ 不可用'}</div></div>
+    `;
+}
+
+async function saveAIConfig() {
+    const provider = document.getElementById('ai-provider').value;
+    const apiKey = document.getElementById('ai-api-key').value;
+    const apiBase = document.getElementById('ai-api-base').value;
+    const model = document.getElementById('ai-model').value;
+    const translateEnabled = document.getElementById('ai-translate').value === 'true';
+    const body = { provider, translate_enabled: translateEnabled };
+    if (apiKey) body.api_key = apiKey;
+    if (apiBase) body.api_base = apiBase;
+    if (model) body.model = model;
+    await api('/api/ai-config', 'PUT', body);
+    toast('AI 配置已保存');
+    loadAIConfig();
+}
+
+async function loadEmailConfig() {
+    const config = await api('/api/email-config');
+    document.getElementById('email-smtp-host').value = config.smtp_host || '';
+    document.getElementById('email-smtp-port').value = config.smtp_port || 465;
+    document.getElementById('email-smtp-user').value = config.smtp_user || '';
+    document.getElementById('email-smtp-password').value = '';
+    document.getElementById('email-smtp-password').placeholder = config.smtp_user ? '已设置（留空保持不变）' : '授权码';
+    document.getElementById('email-sender').value = config.sender || '';
+    document.getElementById('email-recipients').value = config.recipients || '';
+    document.getElementById('email-use-ssl').value = config.use_ssl ? 'true' : 'false';
+    document.getElementById('email-status').innerHTML = `
+        <div class="config-item"><div class="key">SMTP 服务器</div><div class="val">${config.smtp_host || '未设置'}</div></div>
+        <div class="config-item"><div class="key">SMTP 端口</div><div class="val">${config.smtp_port || '未设置'}</div></div>
+        <div class="config-item"><div class="key">用户名</div><div class="val">${config.smtp_user || '未设置'}</div></div>
+        <div class="config-item"><div class="key">发件人</div><div class="val">${config.sender || '未设置'}</div></div>
+        <div class="config-item"><div class="key">收件人</div><div class="val">${config.recipients || '未设置'}</div></div>
+        <div class="config-item"><div class="key">状态</div><div class="val">${config.is_configured ? '✅ 已配置' : '❌ 未配置'}</div></div>
+    `;
+}
+
+async function saveEmailConfig() {
+    const body = {
+        smtp_host: document.getElementById('email-smtp-host').value,
+        smtp_port: parseInt(document.getElementById('email-smtp-port').value) || 465,
+        smtp_user: document.getElementById('email-smtp-user').value,
+        sender: document.getElementById('email-sender').value,
+        recipients: document.getElementById('email-recipients').value,
+        use_ssl: document.getElementById('email-use-ssl').value === 'true'
+    };
+    const pwd = document.getElementById('email-smtp-password').value;
+    if (pwd) body.smtp_password = pwd;
+    await api('/api/email-config', 'PUT', body);
+    toast('邮件配置已保存');
+    loadEmailConfig();
+}
+
+async function testEmail() {
+    toast('正在发送测试邮件...');
+    const r = await api('/api/email-test', 'POST');
+    toast(r.status === 'ok' ? '测试邮件已发送' : r.message || '发送失败');
+}
+
+async function loadNewsletters() {
+    const list = await api('/api/newsletters');
+    document.getElementById('newsletter-list').innerHTML = list.length ? list.map(n => {
+        let genTime = n.generated_at || '';
+        try {
+            const d = new Date(genTime);
+            if (!isNaN(d.getTime()) && genTime.includes('+')) {
+                genTime = d.toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false});
+            }
+        } catch(e) {}
+        return `<div class="newsletter-item"><div class="info"><h3>${n.title}</h3><p>${n.date} | ${n.format} | ${genTime}</p></div><a href="/api/newsletters/${n.date}/html" target="_blank" class="btn btn-primary btn-sm">查看</a></div>`;
+    }).join('') : '<div class="empty">暂无简报</div>';
+}
+
+async function loadSystem() {
+    const s = await api('/api/status');
+    document.getElementById('system-info').innerHTML = `
+        <div class="config-item"><div class="key">系统名称</div><div class="val">${s.system_name}</div></div>
+        <div class="config-item"><div class="key">版本</div><div class="val">${s.version}</div></div>
+        <div class="config-item"><div class="key">定时任务</div><div class="val">每日 ${s.schedule_time}</div></div>
+        <div class="config-item"><div class="key">新闻源数量</div><div class="val">${s.sources_configured}</div></div>
+        <div class="config-item"><div class="key">新闻总数</div><div class="val">${s.news_count}</div></div>
+        <div class="config-item"><div class="key">已翻译</div><div class="val">${s.translated_count}</div></div>
+    `;
+}
+
+async function collectNews() { await startTask('/api/collect', '采集'); }
+async function translateNews() { await startTask('/api/translate', '翻译'); }
+async function filterAndGenerate() { await startTask('/api/generate-newsletter', '简报生成'); }
+async function runDaily() { await startTask('/api/run-daily', '每日任务'); }
+async function generateNewsletter() { await startTask('/api/generate-newsletter', '简报生成'); loadNewsletters(); }
+async function cleanNews() { if (!confirm('确定清理7天前的旧新闻？')) return; const r = await api('/api/clean', 'POST'); toast(`清理完成: 删除了 ${r.deleted} 条旧新闻`); loadDashboard(); }
+
+async function initFilters() {
+    try {
+        const catData = await api('/api/news/categories');
+        const catSelect = document.getElementById('news-category-filter');
+        for (const cat of (catData.order || [])) { const count = (catData.categories || {})[cat] || 0; if (count > 0) catSelect.innerHTML += `<option value="${cat}">${cat} (${count}条)</option>`; }
+        for (const [cat, count] of Object.entries(catData.categories || {})) { if (!(catData.order || []).includes(cat) && count > 0) catSelect.innerHTML += `<option value="${cat}">${cat} (${count}条)</option>`; }
+        const sources = await api('/api/news-sources');
+        const srcSelect = document.getElementById('news-source-filter');
+        for (const s of sources) { srcSelect.innerHTML += `<option value="${s.name}">${s.name}</option>`; }
+    } catch(e) {}
+}
+
+initFilters();
+loadDashboard();
+</script>
+</body>
+</html>

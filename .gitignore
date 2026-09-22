@@ -15,3 +15,14 @@ rendered_newsletters/
 
 # Bundled only by a future standalone distribution build.
 resource/
+
+# Secrets and runtime output never belong to the release.
+*.env
+*.db
+*.db-wal
+*.db-shm
+*.log
+.venv/
+output/
+render_cache/
+*.zip

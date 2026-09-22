@@ -15,37 +15,17 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.message.message_event_result import MessageChain
 
-# ---- sys.path 注入 ----
-# 1) 插件目录自身：使 bridge 子包可被 import
-_plugin_dir = str(Path(__file__).parent)
-if _plugin_dir not in sys.path:
-    sys.path.insert(0, _plugin_dir)
-
-# 2) NewsFlow 核心库根目录：使 src.xxx 可被 import
-_env_root = os.environ.get("NEWSFLOW_ROOT")
-if _env_root:
-    _newsflow_root = Path(_env_root)
-else:
-    _docker_root = Path("/NewsFlow")
-    if _docker_root.is_dir():
-        _newsflow_root = _docker_root
-    else:
-        _newsflow_root = Path(r"F:\Project\NewsFlow")
-
-_nf_root_str = str(_newsflow_root)
-if _nf_root_str not in sys.path:
-    sys.path.insert(0, _nf_root_str)
-
-# ---- 配置注入 ----
-from bridge.adapters import apply_plugin_config
-from src.config.config import settings
+from .bridge.adapters import apply_plugin_config
+from .bridge.lifecycle import TaskSupervisor
+from .core.config.config import settings
+from .core.filter.filter import AIClient
+from .rendering.playwright import NewsletterRenderer
 
 PLUGIN_NAME = "astrbot_plugin_newsflow"
 
 # ---- 任务状态追踪（内联，避免导入 app.py 触发 FastAPI 实例化） ----
 _task_status: dict = {}
 _task_db_table_created = False
-_playwright_install_lock = asyncio.Lock()
 
 def _init_task_table(storage_db_path: str):
     global _task_db_table_created
@@ -107,7 +87,7 @@ def _update_task(task_id: str, progress: int, message: str, result=None, status:
             pass
 
 
-class NewsflowPlugin(Star):
+class NewsflowPlugin(Star, NewsletterRenderer):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         self.config = config or {}
@@ -117,15 +97,14 @@ class NewsflowPlugin(Star):
 
         apply_plugin_config(settings, self.config, self.data_dir)
 
-        cron_expr = self.config.get("cron_expression", "0 6 * * *")
-        if cron_expr:
-            asyncio.create_task(self._register_cron(cron_expr))
-
+        self._work = TaskSupervisor()
         self._target_sessions = self.config.get("target_sessions", [])
         self._cron_job_id: str | None = None
-        self._render_playwright = None
-        self._render_browser = None
-        self._render_lock = asyncio.Lock()
+        self._init_renderer()
+        cron_expr = self.config.get("cron_expression", "0 6 * * *")
+        self._cron_registration = (
+            asyncio.create_task(self._register_cron(cron_expr)) if cron_expr else None
+        )
 
         # 初始化任务表 + 注册 Plugin Pages Web API
         _init_task_table(str(self.data_dir / "news.db"))
@@ -137,6 +116,7 @@ class NewsflowPlugin(Star):
         pn = PLUGIN_NAME
         ctx = self.context
 
+        ctx.register_web_api(f"/{pn}/maintenance", self._web_maintenance, ["GET", "POST"], "更新准备")
         # 系统状态
         ctx.register_web_api(f"/{pn}/status",            self._web_status,               ["GET"],  "系统状态")
         # 新闻列表
@@ -172,11 +152,29 @@ class NewsflowPlugin(Star):
         except ImportError:
             return obj
 
+    async def _web_maintenance(self):
+        from quart import request
+        if request.method == "POST":
+            payload = await request.get_json()
+            action = payload.get("action") if isinstance(payload, dict) else None
+            if action == "prepare":
+                self._work.pause()
+            elif action == "resume":
+                self._work.resume()
+            else:
+                return self._jsonify({"error": "action must be prepare or resume"}, 400)
+        return self._jsonify({
+            "paused": not self._work.accepting,
+            "active_tasks": self._work.active_count,
+            "ready_to_update": not self._work.accepting and self._work.active_count == 0,
+            "version": "2.0.0",
+        })
+
     # ==================== Handler: 系统状态 ====================
 
     async def _web_status(self):
-        from src.storage.storage import NewsStorage
-        from src.filter.filter import AIClient
+        from .core.storage.storage import NewsStorage
+        from .core.filter.filter import AIClient
         try:
             storage = NewsStorage()
             stats = storage.get_news_stats()
@@ -202,7 +200,7 @@ class NewsflowPlugin(Star):
 
     async def _web_news(self):
         from quart import request as req
-        from src.storage.storage import NewsStorage
+        from .core.storage.storage import NewsStorage
         try:
             storage = NewsStorage()
             limit = req.args.get("limit", 50, type=int)
@@ -220,7 +218,7 @@ class NewsflowPlugin(Star):
 
     async def _web_daily_stats(self):
         from quart import request as req
-        from src.storage.storage import NewsStorage
+        from .core.storage.storage import NewsStorage
         try:
             storage = NewsStorage()
             days = req.args.get("days", 30, type=int)
@@ -232,7 +230,7 @@ class NewsflowPlugin(Star):
     # ==================== Handler: 分类统计 ====================
 
     async def _web_categories(self):
-        from src.storage.storage import NewsStorage
+        from .core.storage.storage import NewsStorage
         try:
             storage = NewsStorage()
             stats = storage.get_news_stats()
@@ -260,7 +258,7 @@ class NewsflowPlugin(Star):
     # ==================== Handler: 简报详情 ====================
 
     async def _web_newsletter_detail(self, date):
-        from src.storage.storage import NewsStorage
+        from .core.storage.storage import NewsStorage
         try:
             storage = NewsStorage()
             newsletter = storage.get_newsletter(date)
@@ -335,16 +333,18 @@ class NewsflowPlugin(Star):
     # ==================== Handler: 触发采集 ====================
 
     async def _web_collect(self):
+        if not self._work.accepting:
+            return self._jsonify({"error": "正在准备更新，请稍后重试或恢复运行"}, 503)
         db_path = str(self.data_dir / "news.db")
         task_id = _create_task("collect", db_path)
 
         async def do_collect():
-            from src.collector.collector import NewsCollector
-            from src.storage.storage import NewsStorage
+            from .core.collector.collector import NewsCollector
+            from .core.storage.storage import NewsStorage
             try:
                 _update_task(task_id, 10, "正在采集新闻...", db_path=db_path)
                 collector = NewsCollector()
-                news = await asyncio.to_thread(collector.collect_news)
+                news = await self._work.to_thread(collector.collect_news)
                 _update_task(task_id, 80, f"采集到 {len(news)} 条，正在保存...", db_path=db_path)
                 storage = NewsStorage()
                 saved, skipped = storage.save_news(news)
@@ -355,21 +355,23 @@ class NewsflowPlugin(Star):
             except Exception as e:
                 _update_task(task_id, 100, f"采集失败: {str(e)}", None, "failed", db_path)
 
-        asyncio.create_task(do_collect())
+        self._work.start(do_collect())
         return self._jsonify({"status": "ok", "task_id": task_id, "message": "采集任务已启动"})
 
     # ==================== Handler: 每日任务 ====================
 
     async def _web_run_daily(self):
+        if not self._work.accepting:
+            return self._jsonify({"error": "正在准备更新，请稍后重试或恢复运行"}, 503)
         db_path = str(self.data_dir / "news.db")
         task_id = _create_task("daily", db_path)
 
         async def do_daily():
             try:
                 _update_task(task_id, 10, "正在执行完整流水线...", db_path=db_path)
-                from bridge.pipeline import run_pipeline
+                from .bridge.pipeline import run_pipeline
 
-                html, path, stats = await asyncio.to_thread(run_pipeline)
+                html, path, stats = await self._work.to_thread(run_pipeline)
                 if stats.get("error"):
                     _update_task(task_id, 100, f"失败: {stats['error']}", None, "failed", db_path)
                 else:
@@ -380,19 +382,21 @@ class NewsflowPlugin(Star):
             except Exception as e:
                 _update_task(task_id, 100, f"失败: {str(e)}", None, "failed", db_path)
 
-        asyncio.create_task(do_daily())
+        self._work.start(do_daily())
         return self._jsonify({"status": "ok", "task_id": task_id, "message": "每日任务已启动"})
 
     # ==================== Handler: 生成简报 ====================
 
     async def _web_generate_newsletter(self):
+        if not self._work.accepting:
+            return self._jsonify({"error": "正在准备更新，请稍后重试或恢复运行"}, 503)
         db_path = str(self.data_dir / "news.db")
         task_id = _create_task("newsletter", db_path)
 
         async def do_generate():
-            from src.storage.storage import NewsStorage
-            from src.filter.filter import AIFilter, AITranslator
-            from src.newsletter.newsletter import NewsletterGenerator
+            from .core.storage.storage import NewsStorage
+            from .core.filter.filter import AIFilter, AITranslator
+            from .core.newsletter.newsletter import NewsletterGenerator
             try:
                 _update_task(task_id, 10, "正在加载新闻...", db_path=db_path)
                 storage = NewsStorage()
@@ -428,7 +432,7 @@ class NewsflowPlugin(Star):
 
                 _update_task(task_id, 80, "正在生成简报...", db_path=db_path)
                 generator = NewsletterGenerator()
-                path = await asyncio.to_thread(generator.generate, filtered)
+                path = await self._work.to_thread(generator.generate, filtered)
                 if not path:
                     _update_task(
                         task_id,
@@ -446,15 +450,17 @@ class NewsflowPlugin(Star):
             except Exception as e:
                 _update_task(task_id, 100, f"生成简报失败: {str(e)}", None, "failed", db_path)
 
-        asyncio.create_task(do_generate())
+        self._work.start(do_generate())
         return self._jsonify({"status": "ok", "task_id": task_id, "message": "简报生成任务已启动"})
 
     async def _web_resend_newsletter(self):
+        if not self._work.accepting:
+            return self._jsonify({"error": "正在准备更新，请稍后重试或恢复运行"}, 503)
         db_path = str(self.data_dir / "news.db")
         task_id = _create_task("resend", db_path)
 
         async def do_resend():
-            from src.storage.storage import NewsStorage
+            from .core.storage.storage import NewsStorage
 
             try:
                 tz = timezone(timedelta(hours=8))
@@ -486,7 +492,7 @@ class NewsflowPlugin(Star):
                 logger.error("补发今日简报失败", exc_info=True)
                 _update_task(task_id, 100, f"补发失败：{e}", None, "failed", db_path)
 
-        asyncio.create_task(do_resend())
+        self._work.start(do_resend())
         return self._jsonify({"status": "ok", "task_id": task_id, "message": "简报补发任务已启动"})
 
     # ==================== Handler: 任务状态 ====================
@@ -527,9 +533,16 @@ class NewsflowPlugin(Star):
             logger.error(f"注册定时任务失败: {e}")
 
     async def _cron_run_pipeline(self):
-        from bridge.pipeline import run_pipeline
+        if not self._work.accepting:
+            logger.info("NewsFlow is paused for an update; skipping scheduled work")
+            return
+        task = self._work.start(self._execute_cron_pipeline())
+        await asyncio.shield(task)
+
+    async def _execute_cron_pipeline(self):
+        from .bridge.pipeline import run_pipeline
         logger.info("[Cron] 开始执行每日流水线")
-        html, path, stats = await asyncio.to_thread(run_pipeline)
+        html, path, stats = await self._work.to_thread(run_pipeline)
         date_str = stats.get("date", datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"))
         if html and self._target_sessions:
             try:
@@ -560,12 +573,15 @@ class NewsflowPlugin(Star):
 
     @filter.command("简报")
     async def briefing(self, event: AstrMessageEvent):
+        if not self._work.accepting:
+            yield event.plain_result("NewsFlow 正在准备更新，请稍后重试。")
+            return
         logger.info(f"[简报] 命令触发! arg={self._parse_arg(event)!r}")
         arg = self._parse_arg(event)
 
         if not arg:
             yield event.plain_result("正在生成本地高清简报图片…")
-            asyncio.create_task(self._fetch_briefing(event))
+            self._work.start(self._fetch_briefing(event))
             return
 
         if arg == "状态":
@@ -574,7 +590,7 @@ class NewsflowPlugin(Star):
 
         if arg == "运行":
             yield event.plain_result("🔄 正在运行流水线…")
-            asyncio.create_task(self._run_pipeline_and_notify(event))
+            self._work.start(self._run_pipeline_and_notify(event))
             return
 
         try:
@@ -584,107 +600,7 @@ class NewsflowPlugin(Star):
             return
 
         yield event.plain_result(f"正在生成 {arg} 的本地高清简报图片…")
-        asyncio.create_task(self._fetch_briefing(event, arg))
-
-    async def _ensure_render_browser(self):
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError as exc:
-            raise RuntimeError(
-                "图片渲染需要 Playwright，请先安装插件依赖"
-            ) from exc
-
-        async with _playwright_install_lock:
-            if self._render_browser is not None and self._render_browser.is_connected():
-                return self._render_browser
-
-            if self._render_playwright is not None:
-                try:
-                    await self._render_playwright.stop()
-                except Exception:
-                    pass
-                self._render_playwright = None
-
-            playwright = await async_playwright().start()
-            executable_path = Path(playwright.chromium.executable_path)
-            if not executable_path.is_file():
-                logger.info(
-                    "共享 Playwright Chromium 不存在，开始安装到 %s",
-                    os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "默认缓存目录"),
-                )
-                process = await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-m",
-                    "playwright",
-                    "install",
-                    "chromium",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=os.environ.copy(),
-                )
-                try:
-                    stdout, stderr = await asyncio.wait_for(
-                        process.communicate(), timeout=300
-                    )
-                except asyncio.TimeoutError as exc:
-                    process.kill()
-                    await process.wait()
-                    await playwright.stop()
-                    raise RuntimeError("Playwright Chromium 安装超时") from exc
-
-                if process.returncode != 0 or not executable_path.is_file():
-                    details = (stderr or stdout).decode("utf-8", errors="replace")[-2000:]
-                    await playwright.stop()
-                    raise RuntimeError(f"Playwright Chromium 安装失败: {details}")
-
-            try:
-                browser = await playwright.chromium.launch(headless=True)
-            except Exception:
-                await playwright.stop()
-                raise
-
-            self._render_playwright = playwright
-            self._render_browser = browser
-            logger.info("NewsFlow 图片渲染浏览器已就绪: %s", executable_path)
-            return browser
-
-    async def _render_newsletter_to_file(self, html: str, date_str: str) -> Path:
-        if not html or len(html) > 2_000_000:
-            raise ValueError("简报内容为空或超过渲染大小限制")
-
-        browser = await self._ensure_render_browser()
-        async with self._render_lock:
-            page = await browser.new_page(
-                viewport={"width": 540, "height": 800},
-                device_scale_factor=2,
-                color_scheme="light",
-            )
-            try:
-                await page.set_content(html, wait_until="load", timeout=45_000)
-                await page.evaluate(
-                    "document.fonts ? document.fonts.ready : Promise.resolve()"
-                )
-                image = await page.screenshot(
-                    type="png",
-                    full_page=True,
-                    animations="disabled",
-                    timeout=45_000,
-                )
-            finally:
-                await page.close()
-
-        if len(image) > 20 * 1024 * 1024:
-            raise RuntimeError("渲染图片超过 20 MB 限制")
-        if not image.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise RuntimeError("Playwright 没有返回 PNG 图片")
-
-        output_dir = self.data_dir / "rendered_newsletters"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        image_path = output_dir / f"newsletter_{date_str}.png"
-        temporary_path = image_path.with_suffix(".tmp")
-        temporary_path.write_bytes(image)
-        temporary_path.replace(image_path)
-        return image_path
+        self._work.start(self._fetch_briefing(event, arg))
 
     @staticmethod
     def _count_newsletter_items(html: str) -> int:
@@ -722,7 +638,7 @@ class NewsflowPlugin(Star):
         return result
 
     async def _fetch_briefing(self, event: AstrMessageEvent, date_str: str | None = None):
-        from src.storage.storage import NewsStorage
+        from .core.storage.storage import NewsStorage
 
         tz = timezone(timedelta(hours=8))
         date_str = date_str or datetime.now(tz).strftime('%Y-%m-%d')
@@ -743,7 +659,7 @@ class NewsflowPlugin(Star):
     def _get_status_text(self) -> str:
         lines = [
             "📊 NewsFlow 系统状态",
-            f"• 项目根目录: {_newsflow_root}",
+            f"• 插件版本: 2.0.0",
             f"• 数据目录: {self.data_dir}",
             f"• AI 提供商: {settings.ai_provider}",
             f"• AI 模型: {settings.ai_model}",
@@ -753,9 +669,9 @@ class NewsflowPlugin(Star):
         return "\n".join(lines)
 
     async def _run_pipeline_and_notify(self, event: AstrMessageEvent):
-        from bridge.pipeline import run_pipeline
+        from .bridge.pipeline import run_pipeline
         try:
-            html, path, stats = await asyncio.to_thread(run_pipeline)
+            html, path, stats = await self._work.to_thread(run_pipeline)
             date_str = stats.get("date", datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"))
             msg = (
                 f"✅ 流水线完成 ({date_str})\n"
@@ -771,22 +687,15 @@ class NewsflowPlugin(Star):
         await event.send(event.plain_result(msg))
 
     async def terminate(self):
+        self._work.pause()
+        if self._cron_registration is not None:
+            await asyncio.shield(self._cron_registration)
         if self._cron_job_id:
-            try:
-                await self.context.cron_manager.delete_job(self._cron_job_id)
-                logger.info(f"已清理 cron job: {self._cron_job_id}")
-            except Exception as e:
-                logger.warning(f"清理 cron job 失败: {e}")
-        if self._render_browser is not None:
-            try:
-                await self._render_browser.close()
-            except Exception:
-                pass
-            self._render_browser = None
-        if self._render_playwright is not None:
-            try:
-                await self._render_playwright.stop()
-            except Exception:
-                pass
-            self._render_playwright = None
+            await self.context.cron_manager.delete_job(self._cron_job_id)
+            self._cron_job_id = None
+        await self._work.drain()
+        await self._close_renderer()
+        for client in AIClient._clients.values():
+            client.close()
+        AIClient._clients.clear()
         logger.info("NewsFlow 插件已卸载")

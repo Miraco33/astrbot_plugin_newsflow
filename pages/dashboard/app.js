@@ -342,6 +342,7 @@ window.savePushTargets = async function() {
 /* ====== 系统面板 ====== */
 
 async function loadSystem() {
+    await loadMaintenance();
     try {
         const s = await bridge.apiGet("status");
         const sysInfo = document.getElementById('system-info-container');
@@ -400,3 +401,34 @@ async function initFilters() {
         console.error('Plugin Page 初始化失败:', e);
     }
 })();
+
+
+let maintenancePoll = null;
+async function loadMaintenance() {
+    const label = document.getElementById('maintenance-status');
+    if (!label) return;
+    try {
+        const state = await bridge.apiGet('maintenance');
+        label.textContent = state.ready_to_update
+            ? '已暂停且任务已结束，可以到 AstrBot 插件页更新。'
+            : state.paused ? '已暂停新任务，正在等待现有任务结束…'
+            : '正常运行 · 插件 ' + state.version;
+        if (state.paused && !state.ready_to_update && !maintenancePoll) {
+            maintenancePoll = setTimeout(() => { maintenancePoll = null; loadMaintenance(); }, 2000);
+        }
+    } catch (error) {
+        label.textContent = '状态检查失败，请刷新后重试；暂勿更新。';
+    }
+}
+window.prepareUpdate = async function() {
+    try {
+        await bridge.apiPost('maintenance', {action: 'prepare'});
+        await loadMaintenance();
+    } catch (error) { toast('准备更新失败: ' + error.message); }
+};
+window.resumeWork = async function() {
+    try {
+        await bridge.apiPost('maintenance', {action: 'resume'});
+        await loadMaintenance();
+    } catch (error) { toast('恢复运行失败: ' + error.message); }
+};

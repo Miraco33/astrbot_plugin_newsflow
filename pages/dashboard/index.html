@@ -103,6 +103,13 @@
         <!-- 系统面板 -->
         <div id="panel-system" class="panel">
             <div class="card">
+                <h2>插件更新</h2>
+                <p>更新前先准备，等任务结束后再到 AstrBot 插件页更新。更新成功后自动恢复运行。</p>
+                <p id="maintenance-status" role="status">正在检查运行状态…</p>
+                <button class="btn btn-secondary" onclick="prepareUpdate()">准备更新</button>
+                <button class="btn btn-secondary" onclick="resumeWork()">取消更新并恢复运行</button>
+            </div>
+            <div class="card">
                 <h2>快捷操作</h2>
                 <div style="display:flex;gap:10px;flex-wrap:wrap">
                     <button class="btn btn-primary" onclick="collectNews()">📥 采集新闻</button>

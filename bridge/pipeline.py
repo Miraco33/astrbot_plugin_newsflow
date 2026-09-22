@@ -11,8 +11,8 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
 
     try:
         logger.info("步骤1/8: 采集新闻")
-        from src.collector.collector import NewsCollector
-        from src.storage.storage import NewsStorage
+        from ..core.collector.collector import NewsCollector
+        from ..core.storage.storage import NewsStorage
 
         collector = NewsCollector()
         storage = NewsStorage()
@@ -38,7 +38,7 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
 
     try:
         logger.info("步骤3/8: AI 筛选新闻")
-        from src.filter.filter import AIFilter, AITranslator
+        from ..core.filter.filter import AIFilter, AITranslator
 
         ai_filter = AIFilter()
         all_news = storage.get_news(limit=200)
@@ -89,7 +89,7 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
     path = None
     try:
         logger.info("步骤6/8: 生成简报")
-        from src.newsletter.newsletter import NewsletterGenerator
+        from ..core.newsletter.newsletter import NewsletterGenerator
 
         generator = NewsletterGenerator()
         path = generator.generate(filtered)
@@ -127,7 +127,7 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
 
     try:
         logger.info("步骤7/8: 邮件推送")
-        from src.notifier.notifier import EmailSender
+        from ..core.notifier.notifier import EmailSender
 
         email_sender = EmailSender()
         if email_sender.is_configured():
