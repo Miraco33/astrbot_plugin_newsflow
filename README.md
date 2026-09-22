@@ -5,7 +5,7 @@
 ## 安装与运行条件
 
 - 已验证 AstrBot 4.28.1，当前声明支持 `>=4.28.1,<4.29`。
-- 在 AstrBot 通过仓库 URL 安装：`https://github.com/Shuyuxu211/astrbot_plugin_newsflow`。
+- 在 AstrBot 通过仓库 URL 安装：`https://github.com/Miraco33/astrbot_plugin_newsflow`。
 - Python 依赖见根目录 `requirements.txt`。Chromium 系统运行库和中文字体需由部署环境提供，首次缺少浏览器时仍走本地 Playwright 安装路径。
 - 当前 Oracle A1 派生镜像已提供运行环境；普通 AstrBot 镜像不保证可以直接渲染。不会调用远程 HTML 渲染器。
 - DeepSeek 是生产验证的提供商；其他保留的兼容入口仍属实验性支持。
