@@ -104,35 +104,49 @@ def _strip_speculative_impact_tail(value: str) -> str:
     return text.rstrip('，,；;')
 
 
+SUMMARY_MAX_CHARS = 80
+SUMMARY_CALENDAR_DATE_RE = re.compile(
+    r'(?<!\d)(?:19|20)\d{2}年(?:\d{1,2}月(?:\d{1,2}日)?)?'
+    r'|(?<!\d)\d{1,2}月\d{1,2}日'
+)
+
+
+def _summary_figure_numbers(value: str) -> set[str]:
+    # Calendar labels must not force source paragraphs back into a short summary.
+    # Keep the original extractor unchanged for event and article deduplication.
+    return _key_figure_numbers(SUMMARY_CALENDAR_DATE_RE.sub('', str(value or '')))
+
+
 def _summary_with_key_figures(news: Dict[str, Any], value: str) -> str:
     summary = _strip_speculative_impact_tail(value)
     source_text = f"{news.get('title', '')}。{news.get('summary', '') or ''}"
-    source_numbers = _key_figure_numbers(source_text)
-    if not source_numbers or source_numbers & _key_figure_numbers(summary):
+    source_numbers = _summary_figure_numbers(source_text)
+    if not source_numbers or source_numbers & _summary_figure_numbers(summary):
         return summary
 
     clauses = [
-        clause.strip()
+        _strip_speculative_impact_tail(clause.strip())
         for clause in re.split(r'[。！？!?；;\n]+', source_text)
-        if _key_figure_numbers(clause)
+        if _summary_figure_numbers(clause)
     ]
-    if not clauses:
-        return summary
-    clause = max(clauses, key=lambda item: (len(_key_figure_numbers(item)), -len(item)))
-    if len(clause) > 100:
-        first_figure = KEY_FIGURE_RE.search(clause)
-        center = first_figure.start() if first_figure else 0
-        start = max(0, center - 35)
-        clause = clause[start:start + 100].strip(' ，,；;')
-    clause = _strip_speculative_impact_tail(clause)
-    if not clause:
-        return summary
-    if not summary:
-        return clause
-    if clause.lower() in summary.lower():
-        return summary
-    separator = '; ' if re.search(r'[A-Za-z]', clause) else '；'
-    return f"{summary.rstrip('。.')}{separator}{clause}"
+    clauses.sort(key=lambda item: (-len(_summary_figure_numbers(item)), len(item)))
+    for clause in clauses:
+        if not clause or not _summary_figure_numbers(clause):
+            continue
+        if clause.lower() in summary.lower():
+            return summary
+        separator = '; ' if re.search(r'[A-Za-z]', clause) else '；'
+        candidate = f"{summary.rstrip('。.')}{separator}{clause}" if summary else clause
+        # Only append a complete source sentence that fits. Never slice a fact.
+        if len(candidate) <= SUMMARY_MAX_CHARS:
+            return candidate
+
+    logger.warning(
+        "摘要数字补全已跳过：完整事实句无法放入 %d 字预算（摘要原长 %d），保留原摘要",
+        SUMMARY_MAX_CHARS, len(summary),
+    )
+    return summary
+
 
 FILTER_SYSTEM_PROMPT = """你是面向金融市场、宏观研究和产业研究读者的新闻晨报主编。你的目标不是挑选最轰动的新闻，而是在有限版面内形成均衡、可决策的新闻组合。
 
@@ -168,7 +182,7 @@ FILTER_SYSTEM_PROMPT = """你是面向金融市场、宏观研究和产业研究
 - story_key：同一长期故事必须使用稳定、宽口径的短标识，例如同一战争、同一贸易争端、同一央行政策周期
 - event_key：同一具体事件必须使用稳定、窄口径的短标识
 - 不要因来源是国际大媒体而自动提高分数
-- summary对中文源和外文源都必须重新概括为一句中文，目标40-60字、最多80字（含标点）；输出前检查字数，超长时删减次要背景并重新组织为完整句子，不使用省略号；只写核心主体、行动、结果和最重要的决策相关数字，不照抄正文或罗列背景。不要在末尾补写“可能影响/或将提振/可能造成冲击”等推断，影响判断只体现在impact_score和reason中
+- summary对中文源和外文源都必须重新概括为一句中文，目标40-60字、最多80字（硬性上限，汉字、数字、英文字母、空格和标点均逐字符计数）；提交JSON前逐条检查summary，超过80字符必须改写到80以内才可输出；只保留一件核心事件、主体、行动或结果和最重要的1-2组数字，删除来源署名、重复日期和次要背景；必须写成完整句子，不得以省略号或半句话凑字数；只写核心主体、行动、结果和最重要的决策相关数字，不照抄正文或罗列背景。不要在末尾补写“可能影响/或将提振/可能造成冲击”等推断，影响判断只体现在impact_score和reason中
 
 请严格返回JSON，不要输出额外文字。"""
 
@@ -1404,7 +1418,7 @@ class AIFilter:
 - story_key：同一长期故事共享的稳定短标识
 - event_key：同一具体事件共享的稳定短标识
 - reason：保留或排除理由
-- summary：一句中文事实摘要，目标40-60字、最多80字（含标点）；输出前检查字数，超长时删减次要背景并重新组织为完整句子，不使用省略号；中文源也必须重新概括，保留核心主体、行动、结果及最重要的金额、比例、利率等数字，不照抄长正文、不罗列背景
+- summary：一句中文事实摘要，目标40-60字、最多80字（硬性上限，汉字、数字、英文字母、空格和标点均逐字符计数）；提交JSON前逐条检查summary，超过80字符必须改写到80以内才可输出；只保留一件核心事件、主体、行动或结果和最重要的1-2组数字，删除来源署名、重复日期和次要背景；必须写成完整句子，不得以省略号或半句话凑字数；中文源也必须重新概括，保留核心主体、行动、结果及最重要的金额、比例、利率等数字，不照抄长正文、不罗列背景
 
 输出压缩要求：
 - 必须覆盖新闻列表中的每一个索引，不能省略被排除项
@@ -1749,7 +1763,7 @@ class AITranslator:
 
             prompt = f"""Translate the following English news into Simplified Chinese. For each item, return EXACTLY two lines:
 Line 1: Chinese title (concise, include key entities like country names, organizations)
-Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, at most 80 including punctuation; shorten secondary background before returning, never use ellipses; include who did what + confirmed result + every decision-relevant number/casualty. If Summary is already Chinese, repeat its facts faithfully. Do not add forecasts, market implications, or "may affect" tails)
+Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, hard limit 80 characters counting every Chinese character, Latin letter, digit, space and punctuation mark; count before returning and rewrite any over-limit summary; remove secondary background and redundant dates, never use ellipses or sentence fragments; include who did what + confirmed result + every decision-relevant number/casualty. If Summary is already Chinese, repeat its facts faithfully. Do not add forecasts, market implications, or "may affect" tails)
 Separate each item with a blank line.
 
 {text}"""
@@ -1792,7 +1806,7 @@ Separate each item with a blank line.
         summary = self._translation_summary(news)
         prompt = f"""Translate the following English news into Simplified Chinese. Return EXACTLY two lines:
 Line 1: Chinese title (concise, include key entities)
-Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, at most 80 including punctuation; shorten secondary background before returning, never use ellipses; include who did what + confirmed result + all key numbers; do not add forecasts or speculative impact tails)
+Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, hard limit 80 characters counting every Chinese character, Latin letter, digit, space and punctuation mark; count before returning and rewrite any over-limit summary; remove secondary background and redundant dates, never use ellipses or sentence fragments; include who did what + confirmed result + all key numbers; do not add forecasts or speculative impact tails)
 
 Title: {title}
 Summary: {summary}"""
@@ -1832,7 +1846,7 @@ Summary: {summary}"""
 
             prompt = f"""Translate the following English news into Simplified Chinese. For each item, return EXACTLY two lines:
 Line 1: Chinese title (concise, include key entities like country names, organizations)
-Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, at most 80 including punctuation; shorten secondary background before returning, never use ellipses; include who did what + confirmed result + every decision-relevant number/casualty. If Summary is already Chinese, repeat its facts faithfully. Do not add forecasts, market implications, or "may affect" tails)
+Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, hard limit 80 characters counting every Chinese character, Latin letter, digit, space and punctuation mark; count before returning and rewrite any over-limit summary; remove secondary background and redundant dates, never use ellipses or sentence fragments; include who did what + confirmed result + every decision-relevant number/casualty. If Summary is already Chinese, repeat its facts faithfully. Do not add forecasts, market implications, or "may affect" tails)
 Separate each item with a blank line.
 
 {text}"""

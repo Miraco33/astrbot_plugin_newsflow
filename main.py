@@ -167,7 +167,7 @@ class NewsflowPlugin(Star, NewsletterRenderer):
             "paused": not self._work.accepting,
             "active_tasks": self._work.active_count,
             "ready_to_update": not self._work.accepting and self._work.active_count == 0,
-            "version": "2.0.0",
+            "version": "2.0.1",
         })
 
     # ==================== Handler: 系统状态 ====================
@@ -659,7 +659,7 @@ class NewsflowPlugin(Star, NewsletterRenderer):
     def _get_status_text(self) -> str:
         lines = [
             "📊 NewsFlow 系统状态",
-            f"• 插件版本: 2.0.0",
+            f"• 插件版本: 2.0.1",
             f"• 数据目录: {self.data_dir}",
             f"• AI 提供商: {settings.ai_provider}",
             f"• AI 模型: {settings.ai_model}",
