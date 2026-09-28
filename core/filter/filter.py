@@ -117,6 +117,32 @@ def _summary_figure_numbers(value: str) -> set[str]:
     return _key_figure_numbers(SUMMARY_CALENDAR_DATE_RE.sub('', str(value or '')))
 
 
+def _summary_lacks_context(value: str) -> bool:
+    text = str(value or '').strip().strip('。.!！')
+    # Match standalone reaction/attention teasers, not informative short facts.
+    return bool(re.fullmatch(
+        r'.{1,35}?(?:(?:立即|迅速|随即|很快|已经|已|对此|就此|作出|做出|予以)*)'
+        r'(?:反应|回应|响应|引发关注|备受关注)', text
+    )) and not bool(re.search(
+        r'宣布|加征|下调|上调|延长|批准|禁止|签署|裁决|撤销|投资|收购|\d', text
+    ))
+
+
+def _ensure_summary_context(value: str, title: str) -> str:
+    summary = str(value or '').strip()
+    title = str(title or '').strip()
+    if (
+        _summary_lacks_context(summary)
+        and 10 <= len(title) <= SUMMARY_MAX_CHARS
+        and re.search(r'[\u4e00-\u9fff]', title)
+        and not _summary_lacks_context(title)
+        and not re.search(r'…|\.\.\.', title)
+    ):
+        logger.warning("摘要缺少具体事件或行动，改用已有完整中文标题")
+        return title
+    return summary
+
+
 def _summary_with_key_figures(news: Dict[str, Any], value: str) -> str:
     summary = _strip_speculative_impact_tail(value)
     source_text = f"{news.get('title', '')}。{news.get('summary', '') or ''}"
@@ -182,7 +208,7 @@ FILTER_SYSTEM_PROMPT = """你是面向金融市场、宏观研究和产业研究
 - story_key：同一长期故事必须使用稳定、宽口径的短标识，例如同一战争、同一贸易争端、同一央行政策周期
 - event_key：同一具体事件必须使用稳定、窄口径的短标识
 - 不要因来源是国际大媒体而自动提高分数
-- summary对中文源和外文源都必须重新概括为一句中文，目标40-60字、最多80字（硬性上限，汉字、数字、英文字母、空格和标点均逐字符计数）；提交JSON前逐条检查summary，超过80字符必须改写到80以内才可输出；只保留一件核心事件、主体、行动或结果和最重要的1-2组数字，删除来源署名、重复日期和次要背景；必须写成完整句子，不得以省略号或半句话凑字数；只写核心主体、行动、结果和最重要的决策相关数字，不照抄正文或罗列背景。不要在末尾补写“可能影响/或将提振/可能造成冲击”等推断，影响判断只体现在impact_score和reason中
+- summary对中文源和外文源都必须重新概括为一句中文，目标40-60字、最多80字（硬性上限，汉字、数字、英文字母、空格和标点均逐字符计数）；提交JSON前逐条检查summary，超过80字符必须改写到80以内才可输出；只保留一件核心事件、主体、行动或结果和最重要的1-2组数字，删除来源署名、重复日期和次要背景；必须让读者不看标题也能知道发生了什么：交代事件或对象、具体行动或已确认结果；不得只写“立即作出反应”“引发关注”“发表讲话”等没有事件内容的句子；信息完整优先于凑到40字，在80字符以内写清楚，不得以省略号或半句话凑字数；只写核心主体、行动、结果和最重要的决策相关数字，不照抄正文或罗列背景。不要在末尾补写“可能影响/或将提振/可能造成冲击”等推断，影响判断只体现在impact_score和reason中
 
 请严格返回JSON，不要输出额外文字。"""
 
@@ -629,39 +655,106 @@ class AIFilter:
         logger.info(f"日期过滤: {len(news_list)} -> {len(filtered)} 条 (保留{hours}小时内)")
         return filtered
 
+    def _minimum_news(self, rules: Dict[str, Any]) -> int:
+        maximum = max(int(rules.get('max_news', 20)), 1)
+        return min(max(int(settings.filter_settings.get('min_news', 16)), 1), maximum)
+
+    def _supplement_inputs(self, all_news, current_window, selected, rules):
+        if len(selected) >= self._minimum_news(rules):
+            return []
+        hours = min(max(int(settings.filter_settings.get('supplement_hours', 48)), 24), 48)
+        if hours <= 24:
+            return []
+        current_ids = {self._candidate_identity(item) for item in current_window}
+        older = [item for item in self._filter_by_date(all_news, hours=hours)
+                 if self._candidate_identity(item) not in current_ids]
+        if not older:
+            return []
+        recent = self.storage.get_recent_events(days=3)
+        published_links = {self._normalize_link(item.get('link', '')) for item in recent.values()}
+        published_links.discard('')
+        older = [item for item in older
+                 if self._normalize_link(item.get('link', '')) not in published_links]
+        older = self._coarse_filter(older, rules)
+        cap = min(max(int(settings.filter_settings.get('supplement_max_candidates', 60)), 1), 60)
+        logger.info("24小时选稿不足: %d/%d；评估24–48小时未播候选 %d 条",
+                    len(selected), self._minimum_news(rules), min(len(older), cap))
+        return older[:cap]
+
+    def _merge_supplement(self, selected, older, rules):
+        allowed = {'政策监管', '财经市场', '科技产业'}
+        combined = list(selected)
+        for news in older:
+            if news.get('topic') not in allowed or news.get('_hard_excluded'):
+                continue
+            if float(news.get('relevance_score', 0) or 0) < 5:
+                continue
+            if news.get('_ai_assessed') and not news.get('_ai_keep'):
+                continue
+            if self._has_high_confidence_duplicate(news, combined):
+                continue
+            combined.append(news)
+        result = self._categorize_by_topic(
+            combined, max_news=self._minimum_news(rules), initial_selection=selected,
+        )
+        original_ids = {self._candidate_identity(item) for item in selected}
+        for item in result:
+            if self._candidate_identity(item) not in original_ids:
+                item['_supplemented_48h'] = True
+        logger.info("48小时补位完成: %d + %d -> %d 条（仅核心主题，保留24小时优先）",
+                    len(selected), len(result) - len(selected), len(result))
+        if len(result) < self._minimum_news(rules):
+            logger.warning("48小时内合格且未重复的核心新闻仍不足软目标: %d/%d",
+                           len(result), self._minimum_news(rules))
+        return result
+
     def filter_news(self, news_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not news_list:
             return []
-
         dated_news = self._filter_by_date(news_list)
         rules = self._load_filter_rules()
-        if not dated_news:
-            return []
-
-        if not self.client.is_configured():
+        use_ai = self.client.is_configured()
+        if use_ai:
+            result = self._two_round_filter(dated_news, rules) if dated_news else []
+        else:
             logger.warning("未配置 AI API Key，使用统一关键词评估与组合选稿")
-            coarse_filtered = self._coarse_filter(dated_news, rules)
-            candidates = self._keyword_filter(coarse_filtered, rules)
-            return self._finalize_candidates(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
-
-        return self._two_round_filter(dated_news, rules)
+            candidates = self._keyword_filter(self._coarse_filter(dated_news, rules), rules)
+            result = self._finalize_candidates(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
+        older = self._supplement_inputs(news_list, dated_news, result, rules)
+        if older:
+            if use_ai:
+                extra = self._two_round_filter(older, rules)
+            else:
+                candidates = self._keyword_filter(older, rules)
+                extra = self._finalize_candidates(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
+            result = self._merge_supplement(result, extra, rules)
+        if len(result) < self._minimum_news(rules):
+            logger.warning("最终选稿不足软目标: %d/%d；保留质量与去重限制", len(result), self._minimum_news(rules))
+        return result
 
     async def filter_news_async(self, news_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not news_list:
             return []
-
         dated_news = self._filter_by_date(news_list)
         rules = self._load_filter_rules()
-        if not dated_news:
-            return []
-
-        if not self.client.is_configured():
+        use_ai = self.client.is_configured()
+        if use_ai:
+            result = await self._two_round_filter_async(dated_news, rules) if dated_news else []
+        else:
             logger.warning("未配置 AI API Key，使用统一关键词评估与组合选稿")
-            coarse_filtered = self._coarse_filter(dated_news, rules)
-            candidates = self._keyword_filter(coarse_filtered, rules)
-            return self._finalize_candidates(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
-
-        return await self._two_round_filter_async(dated_news, rules)
+            candidates = self._keyword_filter(self._coarse_filter(dated_news, rules), rules)
+            result = await self._finalize_candidates_async(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
+        older = self._supplement_inputs(news_list, dated_news, result, rules)
+        if older:
+            if use_ai:
+                extra = await self._two_round_filter_async(older, rules)
+            else:
+                candidates = self._keyword_filter(older, rules)
+                extra = await self._finalize_candidates_async(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
+            result = self._merge_supplement(result, extra, rules)
+        if len(result) < self._minimum_news(rules):
+            logger.warning("最终选稿不足软目标: %d/%d；保留质量与去重限制", len(result), self._minimum_news(rules))
+        return result
 
     def _load_filter_rules(self) -> Dict[str, Any]:
         rules = {
@@ -1418,7 +1511,7 @@ class AIFilter:
 - story_key：同一长期故事共享的稳定短标识
 - event_key：同一具体事件共享的稳定短标识
 - reason：保留或排除理由
-- summary：一句中文事实摘要，目标40-60字、最多80字（硬性上限，汉字、数字、英文字母、空格和标点均逐字符计数）；提交JSON前逐条检查summary，超过80字符必须改写到80以内才可输出；只保留一件核心事件、主体、行动或结果和最重要的1-2组数字，删除来源署名、重复日期和次要背景；必须写成完整句子，不得以省略号或半句话凑字数；中文源也必须重新概括，保留核心主体、行动、结果及最重要的金额、比例、利率等数字，不照抄长正文、不罗列背景
+- summary：一句中文事实摘要，目标40-60字、最多80字（硬性上限，汉字、数字、英文字母、空格和标点均逐字符计数）；提交JSON前逐条检查summary，超过80字符必须改写到80以内才可输出；只保留一件核心事件、主体、行动或结果和最重要的1-2组数字，删除来源署名、重复日期和次要背景；必须让读者不看标题也能知道发生了什么：交代事件或对象、具体行动或已确认结果；不得只写“立即作出反应”“引发关注”“发表讲话”等没有事件内容的句子；信息完整优先于凑到40字，在80字符以内写清楚，不得以省略号或半句话凑字数；中文源也必须重新概括，保留核心主体、行动、结果及最重要的金额、比例、利率等数字，不照抄长正文、不罗列背景
 
 输出压缩要求：
 - 必须覆盖新闻列表中的每一个索引，不能省略被排除项
@@ -1497,7 +1590,9 @@ class AIFilter:
             news['story_key'] = self._derive_story_key(news, item_result.get('story_key', ''))
             ai_summary = str(item_result.get('summary', '') or '').strip()
             if ai_summary:
-                news['ai_summary'] = _summary_with_key_figures(news, ai_summary)
+                news['ai_summary'] = _ensure_summary_context(
+                    _summary_with_key_figures(news, ai_summary), news.get('title', '')
+                )
             if keep and self._is_unsupported_third_party_opinion(news):
                 keep = False
                 news['_hard_excluded'] = True
@@ -1602,6 +1697,7 @@ class AIFilter:
         self,
         news_list: List[Dict[str, Any]],
         max_news: Optional[int] = None,
+        initial_selection: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         if max_news is None:
             max_news = self._load_filter_rules().get('max_news', 20)
@@ -1622,6 +1718,8 @@ class AIFilter:
         topic_counts: Dict[str, int] = {}
 
         def add(news: Dict[str, Any], source_limit: int, enforce_topic_quota: bool) -> bool:
+            if len(selected) >= max_news:
+                return False
             identity = news.get('id') or news.get('link') or id(news)
             if identity in selected_ids:
                 return False
@@ -1646,6 +1744,12 @@ class AIFilter:
             return True
 
         # 先按目标版面填充核心分类，避免高分地缘新闻占满名额。
+        # Existing 24-hour selections have priority over older, higher-scored items.
+        for item in initial_selection or []:
+            if len(selected) >= max_news:
+                break
+            add(item, per_source_max + 2, False)
+
         for topic in ('政策监管', '财经市场', '科技产业', '国际局势', '其他'):
             target = int(quotas.get(topic, 0))
             if target <= 0:
@@ -1668,6 +1772,21 @@ class AIFilter:
                 if len(selected) >= max_news:
                     break
                 add(news, per_source_max + 2, False)
+
+        excluded = {'overall_limit': 0, 'international_limit': 0, 'story_limit': 0, 'source_limit': 0}
+        for news in candidates:
+            identity = news.get('id') or news.get('link') or id(news)
+            if identity in selected_ids:
+                continue
+            if len(selected) >= max_news:
+                excluded['overall_limit'] += 1
+            elif news.get('topic') == '国际局势' and topic_counts.get('国际局势', 0) >= int(quotas.get('国际局势', max_news)):
+                excluded['international_limit'] += 1
+            elif news.get('story_key') and story_counts.get(news['story_key'], 0) >= per_story_max:
+                excluded['story_limit'] += 1
+            elif source_counts.get(news.get('source', '未知'), 0) >= per_source_max + 2:
+                excluded['source_limit'] += 1
+        logger.info("组合未选原因计数: %s", excluded)
 
         logger.info(
             f"组合选稿: {len(news_list)} -> {len(selected)} 条, "
@@ -1746,6 +1865,10 @@ class AITranslator:
             else:
                 news['summary_original'] = news.get('summary', '')
                 news['summary'] = _summary_with_key_figures(news, clean_summary)
+        display_field = 'ai_summary' if news.get('ai_summary') else 'summary'
+        news[display_field] = _ensure_summary_context(
+            news.get(display_field, ''), news.get('title', '')
+        )
         news['translated'] = 1
 
     def _translate_batch_text(self, news_batch: List[Dict[str, Any]]) -> None:
@@ -1764,6 +1887,7 @@ class AITranslator:
             prompt = f"""Translate the following English news into Simplified Chinese. For each item, return EXACTLY two lines:
 Line 1: Chinese title (concise, include key entities like country names, organizations)
 Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, hard limit 80 characters counting every Chinese character, Latin letter, digit, space and punctuation mark; count before returning and rewrite any over-limit summary; remove secondary background and redundant dates, never use ellipses or sentence fragments; include who did what + confirmed result + every decision-relevant number/casualty. If Summary is already Chinese, repeat its facts faithfully. Do not add forecasts, market implications, or "may affect" tails)
+Use Title and Summary together to name the specific event and concrete action or result. Never output a standalone teaser such as "Trump reacted immediately"; explain what happened. Translate ordinary words such as election campaign into Chinese; retain English only for proper names.
 Separate each item with a blank line.
 
 {text}"""
@@ -1808,6 +1932,8 @@ Separate each item with a blank line.
 Line 1: Chinese title (concise, include key entities)
 Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, hard limit 80 characters counting every Chinese character, Latin letter, digit, space and punctuation mark; count before returning and rewrite any over-limit summary; remove secondary background and redundant dates, never use ellipses or sentence fragments; include who did what + confirmed result + all key numbers; do not add forecasts or speculative impact tails)
 
+Use Title and Summary together to identify the event and the concrete action or result. Never output only "reacted immediately" or another context-free teaser. Translate ordinary English words into Chinese.
+
 Title: {title}
 Summary: {summary}"""
 
@@ -1847,6 +1973,7 @@ Summary: {summary}"""
             prompt = f"""Translate the following English news into Simplified Chinese. For each item, return EXACTLY two lines:
 Line 1: Chinese title (concise, include key entities like country names, organizations)
 Line 2: Chinese factual summary (one complete sentence, target 40-60 Chinese characters, hard limit 80 characters counting every Chinese character, Latin letter, digit, space and punctuation mark; count before returning and rewrite any over-limit summary; remove secondary background and redundant dates, never use ellipses or sentence fragments; include who did what + confirmed result + every decision-relevant number/casualty. If Summary is already Chinese, repeat its facts faithfully. Do not add forecasts, market implications, or "may affect" tails)
+Use Title and Summary together to name the specific event and concrete action or result. Never output a standalone teaser such as "Trump reacted immediately"; explain what happened. Translate ordinary words such as election campaign into Chinese; retain English only for proper names.
 Separate each item with a blank line.
 
 {text}"""

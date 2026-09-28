@@ -247,6 +247,17 @@ class NewsStorage:
 
         return news_list
 
+    def get_briefing_candidates(self, limit: int = 600) -> List[Dict[str, Any]]:
+        """Read a bounded, recency-ordered pool without UI category quotas."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM news ORDER BY "
+                "COALESCE(julianday(published), julianday(collected_at)) DESC, id DESC LIMIT ?",
+                (min(max(int(limit), 1), 600),),
+            ).fetchall()
+            return [self._row_to_dict(row) for row in rows]
+
     def get_news_stats(self) -> Dict[str, Any]:
         stats = {'total': 0, 'by_source': {}, 'by_category': {}, 'translated': 0}
         try:

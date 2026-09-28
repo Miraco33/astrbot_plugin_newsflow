@@ -66,7 +66,7 @@ class NewsScheduler:
 
             logger.info("步骤3: AI筛选新闻")
             ai_filter = AIFilter()
-            all_news = self.storage.get_news(limit=200)
+            all_news = self.storage.get_briefing_candidates()
             filtered = ai_filter.filter_news(all_news)
             logger.info(f"筛选完成: {len(all_news)} 条中筛选出 {len(filtered)} 条")
 

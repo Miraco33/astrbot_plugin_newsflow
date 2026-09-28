@@ -384,7 +384,7 @@ async def filter_news():
     async def do_filter():
         try:
             _update_task(task_id, 10, "正在加载新闻...")
-            news_list = storage.get_news(limit=200)
+            news_list = storage.get_briefing_candidates()
             if not news_list:
                 _update_task(task_id, 100, "生成失败：当前数据库没有新闻，请先执行采集。",
                              {"total": 0, "filtered": 0, "reason": "no_source_news"}, "failed")
@@ -452,7 +452,7 @@ async def generate_newsletter():
     async def do_generate():
         try:
             _update_task(task_id, 10, "正在加载新闻...")
-            news_list = storage.get_news(limit=200)
+            news_list = storage.get_briefing_candidates()
             _update_task(task_id, 30, f"正在AI筛选 {len(news_list)} 条新闻...")
             ai_filter = AIFilter()
             filtered = await ai_filter.filter_news_async(news_list)
@@ -495,7 +495,7 @@ async def run_daily_task():
             _update_task(task_id, 20, f"步骤2/7: 采集完成(新增{saved}条, 跳过{skipped}条)，正在AI筛选...")
 
             ai_filter = AIFilter()
-            all_news = storage.get_news(limit=200)
+            all_news = storage.get_briefing_candidates()
             filtered = await ai_filter.filter_news_async(all_news)
             if not filtered:
                 _update_task(task_id, 100, "每日任务失败：没有符合条件且在有效期内的新闻，未生成简报。",

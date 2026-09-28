@@ -128,6 +128,8 @@ class Settings(BaseSettings):
         "exclude_keywords": ["娱乐", "体育", "八卦"],
         "max_news": 20,
         "min_news": 16,
+        "supplement_hours": 48,
+        "supplement_max_candidates": 60,
         "candidate_pool_multiplier": 3,
         "ai_filter_max_tokens": 4000,
         "ai_filter_split_depth": 2,

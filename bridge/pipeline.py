@@ -41,7 +41,7 @@ def run_pipeline() -> tuple[Optional[str], Optional[str], dict]:
         from ..core.filter.filter import AIFilter, AITranslator
 
         ai_filter = AIFilter()
-        all_news = storage.get_news(limit=200)
+        all_news = storage.get_briefing_candidates()
         filtered = ai_filter.filter_news(all_news)
         selection_topics = dict(Counter(item.get("topic", "其他") for item in filtered))
         selection_sources = dict(Counter(item.get("source", "未知") for item in filtered))

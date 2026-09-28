@@ -63,7 +63,7 @@ def filter_cmd():
 
     try:
         storage = NewsStorage()
-        news_list = storage.get_news(limit=200)
+        news_list = storage.get_briefing_candidates()
 
         if not news_list:
             click.echo("没有新闻可供筛选")
@@ -142,7 +142,7 @@ def generate():
 
     try:
         storage = NewsStorage()
-        news_list = storage.get_news(limit=200)
+        news_list = storage.get_briefing_candidates()
 
         if not news_list:
             click.echo("没有新闻可供生成简报")
