@@ -37,6 +37,8 @@ class RecentSupplementTests(unittest.TestCase):
         f = object.__new__(AIFilter)
         f.source_priorities = {}
         f.client = SimpleNamespace(is_configured=lambda: True)
+        f._deduplicate_similar = Mock(side_effect=lambda items: items)
+        f._deduplicate_similar_async = AsyncMock(side_effect=lambda items: items)
         f.storage = SimpleNamespace(get_recent_events=lambda **kw: memory or {})
         f._load_filter_rules = lambda: {"max_news": 20, "include": [], "exclude": []}
         return f
@@ -50,6 +52,7 @@ class RecentSupplementTests(unittest.TestCase):
         self.assertEqual(len(result), 16)
         self.assertEqual({n["id"] for n in result[:9]}, {n["id"] for n in fresh})
         self.assertEqual(sum(bool(n.get("_supplemented_48h")) for n in result), 7)
+        f._deduplicate_similar.assert_called_once()
 
     def test_sufficient_primary_day_does_not_make_an_extra_ai_call(self):
         fresh = [self.item(i) for i in range(1, 17)]
@@ -99,6 +102,7 @@ class RecentSupplementTests(unittest.TestCase):
         result = asyncio.run(f.filter_news_async(fresh + older))
         self.assertEqual({n["id"] for n in result}, {1, 2})
         self.assertEqual(f._two_round_filter_async.await_count, 2)
+        f._deduplicate_similar_async.assert_awaited_once()
 
     def test_no_current_news_can_still_use_an_unpublished_older_core_item(self):
         f = self.news_filter()

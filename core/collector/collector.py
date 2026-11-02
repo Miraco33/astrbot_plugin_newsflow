@@ -2,6 +2,9 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 import hashlib
+import json
+import re
+from dateutil import parser as dateutil_parser
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin, urlsplit
@@ -141,7 +144,8 @@ class NewsCollector:
             soup = BeautifulSoup(response.content, 'html.parser')
 
             article_link_patterns = source.get('link_patterns', ['/20', 'article', 'detail', 'content'])
-            max_articles = source.get('max_articles', 20)
+            max_articles = max(int(source.get('max_articles', 20)), 0)
+            attempted = 0
 
             seen_urls = set()
             for a in soup.find_all('a', href=True):
@@ -159,10 +163,14 @@ class NewsCollector:
                     continue
                 seen_urls.add(full_url)
 
-                if len(news_list) >= max_articles:
+                if len(news_list) >= max_articles or attempted >= max_articles * 2:
                     break
 
-                page_title, summary = self._fetch_full_content(full_url, source)
+                attempted += 1
+                page_title, summary, published = self._fetch_article(full_url, source)
+                if not published:
+                    logger.warning("网页条目缺少可核验的发布日期，跳过（来源: %s）", source["name"])
+                    continue
                 if not summary or len(summary) < 50:
                     continue
 
@@ -175,7 +183,8 @@ class NewsCollector:
                     'summary': summary,
                     'link': full_url,
                     'source': source['name'],
-                    'published': now.isoformat(),
+                    'published': published.isoformat(),
+                    '_publication_verified': True,
                     'collected_at': now.isoformat(),
                     'category': source.get('category', '未分类'),
                     'content_hash': content_hash
@@ -193,25 +202,20 @@ class NewsCollector:
             link = str(entry.get('link', '') or '').strip()
             guid = str(entry.get('id', '') or entry.get('guid', '') or '').strip()
             published = str(
-                entry.get('published', '') or entry.get('pubDate', '') or entry.get('updated', '') or ''
+                entry.get('published', '') or entry.get('pubDate', '') or ''
             ).strip()
             summary = str(entry.get('summary', '') or entry.get('description', '') or '').strip()
 
             tz_cn = timezone(timedelta(hours=8))
             published_date = None
-            parsed_time = entry.get('published_parsed') or entry.get('updated_parsed') or entry.get('pubdate_parsed')
+            parsed_time = entry.get('published_parsed') or entry.get('pubdate_parsed')
             if parsed_time:
                 published_date = datetime(*parsed_time[:6], tzinfo=timezone.utc)
             elif published:
-                try:
-                    import dateutil.parser
-                    published_date = dateutil.parser.parse(published)
-                    if published_date.tzinfo is None:
-                        published_date = published_date.replace(tzinfo=timezone.utc)
-                except Exception as exc:
-                    logger.warning(f"{source['name']} 发布时间解析失败，使用采集时间: {published} ({exc})")
+                published_date = self._parse_publication_time(published, source)
             if published_date is None:
-                published_date = datetime.now(tz_cn)
+                logger.warning("RSS条目缺少有效发布日期，跳过（来源: %s）", source['name'])
+                return None
 
             content = ''
             entry_content = entry.get('content') or []
@@ -251,6 +255,7 @@ class NewsCollector:
                 'link': link,
                 'source': source['name'],
                 'published': published_iso,
+                '_publication_verified': True,
                 'collected_at': collected_at,
                 'category': source.get('category', '未分类'),
                 'content_hash': content_hash,
@@ -260,16 +265,92 @@ class NewsCollector:
             logger.error(f"解析 {source.get('name', '未知来源')} 新闻条目时出错: {exc}")
             return None
 
+    @staticmethod
+    def _parse_publication_time(value: str, source: Dict[str, Any]) -> Optional[datetime]:
+        text = str(value or '').strip()
+        # Reject partial dates so the parser cannot invent today's year or day.
+        complete_date = (r'(?<!\d)(?:19|20)\d{2}[-/年]\d{1,2}[-/月]\d{1,2}'
+                         r'|\b\d{1,2}\s+[A-Za-z]{3,9}\s+(?:19|20)\d{2}\b'
+                         r'|\b[A-Za-z]{3,9}\s+\d{1,2},?\s+(?:19|20)\d{2}\b')
+        if not re.search(complete_date, text):
+            return None
+        text = text.replace('年', '-').replace('月', '-').replace('日', ' ')
+        try:
+            parsed = dateutil_parser.parse(text)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if parsed.tzinfo is None:
+            zone = timezone.utc if source.get('category') == '英文' else timezone(timedelta(hours=8))
+            parsed = parsed.replace(tzinfo=zone)
+        return parsed
+
+    def _extract_publication_time(self, soup, source, url) -> Optional[datetime]:
+        # Only publication metadata is eligible; update times and body dates are not.
+        names = {
+            'article:published_time', 'og:published_time', 'datepublished',
+            'pubdate', 'publishdate', 'publish_date', 'publication_date',
+            'dc.date.issued', 'dcterms.issued',
+        }
+        for meta in soup.find_all('meta'):
+            name = str(meta.get('property') or meta.get('name') or meta.get('itemprop') or '').lower()
+            if name in names:
+                parsed = self._parse_publication_time(meta.get('content', ''), source)
+                if parsed:
+                    return parsed
+
+        for selector in ('#pubtime_baidu', '[itemprop="datePublished"]', 'time[pubdate]',
+                         '.publish-time', '.publish_time', '.pubtime'):
+            node = soup.select_one(selector)
+            if node:
+                text = node.get('datetime') or node.get('content') or node.get_text(' ', strip=True)
+                match = re.search(r'(?:19|20)\d{2}[-/年]\d{1,2}[-/月]\d{1,2}日?(?:[T\s]+\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)?', text)
+                parsed = self._parse_publication_time(match.group() if match else text, source)
+                if parsed:
+                    return parsed
+
+        for script in soup.select('script[type="application/ld+json"]'):
+            try:
+                data = json.loads(script.string or script.get_text())
+            except (ValueError, TypeError):
+                continue
+            nodes = data if isinstance(data, list) else [data]
+            for node in list(nodes):
+                if isinstance(node, dict) and isinstance(node.get('@graph'), list):
+                    nodes.extend(node['@graph'])
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                types = node.get('@type', [])
+                types = [types] if isinstance(types, str) else types
+                if not isinstance(types, list):
+                    continue
+                if not any(str(kind).endswith('Article') for kind in types):
+                    continue
+                identity = node.get('url') or node.get('mainEntityOfPage') or ''
+                if isinstance(identity, dict):
+                    identity = identity.get('@id', '')
+                if identity and urlsplit(urljoin(url, str(identity))).path != urlsplit(url).path:
+                    continue
+                parsed = self._parse_publication_time(node.get('datePublished', ''), source)
+                if parsed:
+                    return parsed
+        return None
+
     def _fetch_full_content(self, url: str, source: Optional[Dict[str, Any]] = None) -> tuple:
+        title, content, _ = self._fetch_article(url, source)
+        return title, content
+
+    def _fetch_article(self, url: str, source: Optional[Dict[str, Any]] = None) -> tuple:
         try:
             if not self._is_external_link(url):
-                return ('', '')
+                return ('', '', None)
             response = self._request(url, source or {}, timeout=15)
             if response.status_code != 200:
-                return ('', '')
+                return ('', '', None)
 
             soup = BeautifulSoup(response.content, 'html.parser')
 
+            published = self._extract_publication_time(soup, source or {}, url)
             page_title = ''
             title_tag = soup.find('title')
             if title_tag and title_tag.get_text(strip=True):
@@ -316,10 +397,10 @@ class NewsCollector:
                             if len(t) > 20 and not self._is_noise(t):
                                 texts.append(t)
                         if texts:
-                            return (page_title, ' '.join(texts)[:800])
+                            return (page_title, ' '.join(texts)[:800], published)
                     text = content_element.get_text(separator=' ', strip=True)
                     if len(text) > 100:
-                        return (page_title, self._clean_extracted_text(text)[:800])
+                        return (page_title, self._clean_extracted_text(text)[:800], published)
 
             paragraphs = soup.find_all(['p'])
             if paragraphs:
@@ -329,12 +410,12 @@ class NewsCollector:
                     if len(t) > 20 and not self._is_noise(t):
                         texts.append(t)
                 if texts:
-                    return (page_title, ' '.join(texts)[:800])
+                    return (page_title, ' '.join(texts)[:800], published)
 
-            return (page_title, '')
+            return (page_title, '', published)
         except Exception as e:
             logger.error(f"获取网页内容时出错: {str(e)}")
-            return ('', '')
+            return ('', '', None)
 
     def _is_noise(self, text: str) -> bool:
         noise_patterns = [

@@ -59,8 +59,8 @@ OPINION_LANGUAGE_RE = re.compile(
     re.IGNORECASE,
 )
 VAGUE_RESEARCH_CLAIM_RE = re.compile(
-    r'研究显示|研究称|报告认为|报告称|调查认为|机构称|'
-    r'(?:study|research)\s+(?:shows?|finds?|suggests?)|report\s+(?:says?|suggests?)',
+    r'研究显示|研究称|报告认为|报告称|调查认为|调查显示|机构称|数据显示|数据表明|'
+    r'(?:study|research)\s+(?:shows?|finds?|suggests?)|report\s+(?:says?|suggests?)|(?:data|figures)\s+(?:shows?|suggests?|indicates?)',
     re.IGNORECASE,
 )
 FACTUAL_ACTION_RE = re.compile(
@@ -119,6 +119,8 @@ def _summary_figure_numbers(value: str) -> set[str]:
 
 def _summary_lacks_context(value: str) -> bool:
     text = str(value or '').strip().strip('。.!！')
+    if VAGUE_RESEARCH_CLAIM_RE.search(text) and not _summary_figure_numbers(text):
+        return True
     # Match standalone reaction/attention teasers, not informative short facts.
     return bool(re.fullmatch(
         r'.{1,35}?(?:(?:立即|迅速|随即|很快|已经|已|对此|就此|作出|做出|予以)*)'
@@ -628,8 +630,14 @@ class AIFilter:
         removed_details = []
         for news in news_list:
             pub = news.get('published', '')
+            if news.get('_published_unverified'):
+                removed_details.append('历史网页记录的发布时间未经核验')
+                continue
             if not pub:
                 removed_details.append(f"无日期: {news.get('title', '?')[:30]}")
+                continue
+            if not re.search(r'(?:19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}|\b\d{1,2} [A-Za-z]{3,9} (?:19|20)\d{2}\b', str(pub)):
+                removed_details.append('日期不完整')
                 continue
             try:
                 dt = dateutil.parser.parse(str(pub))
@@ -642,13 +650,12 @@ class AIFilter:
                     else:
                         dt = dt.replace(tzinfo=tz_cn)
                 age_hours = (now.timestamp() - dt.timestamp()) / 3600
-                if dt.timestamp() >= cutoff:
+                if cutoff <= dt.timestamp() <= now.timestamp() + 300:
                     filtered.append(news)
                 else:
                     removed_details.append(f"超{age_hours:.0f}h: {news.get('title', '?')[:30]}")
-            except Exception as e:
-                logger.warning(f"日期解析失败: {pub} - {e}, 保留该新闻")
-                filtered.append(news)
+            except (ValueError, TypeError, OverflowError):
+                removed_details.append('日期解析失败')
 
         if removed_details:
             logger.info(f"日期过滤移除 {len(removed_details)} 条: {removed_details[:5]}")
@@ -728,6 +735,9 @@ class AIFilter:
                 candidates = self._keyword_filter(older, rules)
                 extra = self._finalize_candidates(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
             result = self._merge_supplement(result, extra, rules)
+            if (use_ai and getattr(self.client, 'provider', '') not in ('groq', 'qwen')
+                    and any(item.get('_supplemented_48h') for item in result)):
+                result = self._deduplicate_similar(result)
         if len(result) < self._minimum_news(rules):
             logger.warning("最终选稿不足软目标: %d/%d；保留质量与去重限制", len(result), self._minimum_news(rules))
         return result
@@ -752,6 +762,9 @@ class AIFilter:
                 candidates = self._keyword_filter(older, rules)
                 extra = await self._finalize_candidates_async(candidates, [], rules.get('max_news', 20), use_ai_dedup=False)
             result = self._merge_supplement(result, extra, rules)
+            if (use_ai and getattr(self.client, 'provider', '') not in ('groq', 'qwen')
+                    and any(item.get('_supplemented_48h') for item in result)):
+                result = await self._deduplicate_similar_async(result)
         if len(result) < self._minimum_news(rules):
             logger.warning("最终选稿不足软目标: %d/%d；保留质量与去重限制", len(result), self._minimum_news(rules))
         return result
@@ -877,6 +890,8 @@ class AIFilter:
         is_vague_research_claim = VAGUE_RESEARCH_CLAIM_RE.search(text) is not None
         if not is_person_opinion and not is_vague_research_claim:
             return False
+        if is_vague_research_claim and not _summary_figure_numbers(text):
+            return True
         evidence_text = VAGUE_RESEARCH_CLAIM_RE.sub('', text)
         if FACTUAL_ACTION_RE.search(evidence_text):
             return False
@@ -897,6 +912,8 @@ class AIFilter:
         existing_ids = {item.get('id') or item.get('link') or id(item) for item in deduplicated}
         reserve_pool = []
         for news in reserve:
+            if news.get('_hard_excluded') or (news.get('_ai_assessed') and not news.get('_ai_keep')):
+                continue
             identity = news.get('id') or news.get('link') or id(news)
             if identity in existing_ids:
                 continue
@@ -921,9 +938,11 @@ class AIFilter:
         def title_tokens(item: Dict[str, Any]) -> set:
             return set(re.findall(r'[\u4e00-\u9fff]|[a-zA-Z]+|\d+', item.get('title', '').lower()))
 
-        seen_titles = [title_tokens(item) for item in combined if title_tokens(item)]
+        seen_titles = [(title_tokens(item), item) for item in combined if title_tokens(item)]
         added = 0
         for news in reserve_pool:
+            if self._has_high_confidence_duplicate(news, combined):
+                continue
             event_key = self._normalize_key(news.get('event_key', ''))
             normalized_link = self._normalize_link(news.get('link', ''))
             if event_key and event_key in seen_events:
@@ -934,7 +953,9 @@ class AIFilter:
             tokens = title_tokens(news)
             is_title_duplicate = False
             if tokens:
-                for existing_tokens in seen_titles:
+                for existing_tokens, existing_item in seen_titles:
+                    if self._same_reported_incident(news, existing_item) is False:
+                        continue
                     union = len(tokens | existing_tokens)
                     if union and len(tokens & existing_tokens) / union > 0.6:
                         is_title_duplicate = True
@@ -950,7 +971,7 @@ class AIFilter:
             if normalized_link:
                 seen_links.add(normalized_link)
             if tokens:
-                seen_titles.append(tokens)
+                seen_titles.append((tokens, news))
             if len(combined) >= max_news:
                 break
 
@@ -1043,6 +1064,7 @@ class AIFilter:
 - 不要因为行业、主题、数据类型或报道格式相似就合并；不同公司的业绩预告、回购、融资、产能和产品发布必须分别保留
 - 同一公司但发布时间、行动或具体数据不同，也不要仅凭标题相似合并，除非可以确认是同一事件更新
 - 跨来源、跨语言的同一次表决、裁决或政策决定也属于同一具体事件；事件键措辞不同不代表不同事件，应同时核对摘要中的主体、动作和对象
+- 同一次攻击或事故的损失估计、追偿和责任归属报道，在同一份日报合并为一条；金额估计不同本身不足以证明是不同事件。不同受害主体或明确不同发生日期仍分别保留
 - 保留评分最高的；如果评分相同，保留信息最完整的
 - 只有高置信度重复才移除，无法确认时保留全部条目
 
@@ -1065,6 +1087,37 @@ class AIFilter:
     def _title_tokens(title: str) -> set:
         return set(re.findall(r'[\u4e00-\u9fff]|[a-zA-Z]+|\d+', str(title or '').lower()))
 
+    @staticmethod
+    def _same_reported_incident(candidate: Dict[str, Any], existing: Dict[str, Any]) -> Optional[bool]:
+        """Return None for unrecognized text, False for a conflicting incident."""
+        summaries = [str(item.get('ai_summary', '') or item.get('summary', '') or '')
+                     for item in (candidate, existing)]
+        subjects = []
+        for summary in summaries:
+            if not re.search(r'黑客攻击|网络攻击|黑客入侵|cyber.?attack|\bhack(?:ed|ing)?\b', summary, re.I):
+                return None
+            subject = re.match(r'^([\w\u4e00-\u9fff·& .-]{2,30}?)(?:遭|称|表示|披露|宣布|确认|报告|已|被)', summary)
+            if not subject:
+                return None
+            subjects.append(subject[1].strip().lower())
+        if any(subject in {'公司', '该公司', '平台', '交易所', '企业'} for subject in subjects):
+            return None
+        if subjects[0] != subjects[1]:
+            return False
+        # Explicitly different incident dates must remain separate.
+        dates = [set(re.findall(r'(\d{1,2})月(\d{1,2})日', summary)) for summary in summaries]
+        if dates[0] and dates[1] and not dates[0] & dates[1]:
+            return False
+        from datetime import datetime
+        try:
+            times = [datetime.fromisoformat(str(item.get('published', '')).replace('Z', '+00:00'))
+                     for item in (candidate, existing)]
+            if abs((times[0] - times[1]).total_seconds()) > 48 * 3600:
+                return False
+        except (ValueError, TypeError):
+            pass
+        return True
+
     def _has_high_confidence_duplicate(
         self,
         candidate: Dict[str, Any],
@@ -1075,6 +1128,16 @@ class AIFilter:
         candidate_tokens = self._title_tokens(candidate.get('title', ''))
 
         for existing in kept:
+            incident_match = self._same_reported_incident(candidate, existing)
+            if incident_match is False:
+                continue
+            # The same named victim, incident and reported amount is strong evidence
+            # even when the model chose different event keys or title languages.
+            if incident_match:
+                candidate_numbers = _summary_figure_numbers(candidate.get('ai_summary') or candidate.get('summary', ''))
+                existing_numbers = _summary_figure_numbers(existing.get('ai_summary') or existing.get('summary', ''))
+                if candidate_numbers & existing_numbers:
+                    return True
             existing_event = self._normalize_key(existing.get('event_key', ''))
             existing_link = self._normalize_link(existing.get('link', ''))
             if candidate_event and candidate_event == existing_event:
@@ -1112,6 +1175,8 @@ class AIFilter:
         candidate: Dict[str, Any],
         existing: Dict[str, Any],
     ) -> bool:
+        if self._same_reported_incident(candidate, existing) is False:
+            return False
         if self._has_high_confidence_duplicate(candidate, [existing]):
             return True
 
@@ -1129,6 +1194,8 @@ class AIFilter:
         existing_numbers = _key_figure_numbers(
             f"{existing_title} {existing.get('ai_summary', '') or existing.get('summary', '') or ''}"
         )
+        if self._same_reported_incident(candidate, existing):
+            return True
         if candidate_numbers and existing_numbers and not (candidate_numbers & existing_numbers):
             return False
 
@@ -1210,6 +1277,12 @@ class AIFilter:
                     )
                 ):
                     mapped_duplicates.add(remove_index)
+                    # Prefer the already selected current-window report over its supplement.
+                    removed = news_list[remove_index]
+                    kept = news_list[keep_index]
+                    if not removed.get('_supplemented_48h') and kept.get('_supplemented_48h'):
+                        if kept in kept_news:
+                            kept_news[kept_news.index(kept)] = removed
         restored = [
             news_list[i]
             for i in removed_indices
@@ -1227,7 +1300,13 @@ class AIFilter:
             f"去重: 从{len(news_list)}条中移除{len(removed_titles)}条重复, "
             f"移除明细={removed_titles}"
         )
-        return kept_news + restored
+        unique = []
+        for news in sorted(kept_news + restored,
+                           key=lambda item: (not item.get('_supplemented_48h'), self._candidate_rank(item)),
+                           reverse=True):
+            if not self._has_high_confidence_duplicate(news, unique):
+                unique.append(news)
+        return unique
 
     def _deduplicate_similar(self, news_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if len(news_list) <= 1:
@@ -1259,20 +1338,24 @@ class AIFilter:
         seen_tokens = []
         result = []
         for news in news_list:
+            if self._has_high_confidence_duplicate(news, result):
+                continue
             title = news.get('title', '').strip()
             title_tokens = _tokenize(title)
             if len(title_tokens) < 2:
                 result.append(news)
                 continue
             is_dup = False
-            for existing_tokens in seen_tokens:
+            for existing_tokens, existing_item in seen_tokens:
+                if self._same_reported_incident(news, existing_item) is False:
+                    continue
                 intersection = len(title_tokens & existing_tokens)
                 union = len(title_tokens | existing_tokens)
                 if union > 0 and intersection / union > 0.6:
                     is_dup = True
                     break
             if not is_dup:
-                seen_tokens.append(title_tokens)
+                seen_tokens.append((title_tokens, news))
                 result.append(news)
             else:
                 logger.info(f"标题去重移除: {title[:40]}")
@@ -1414,7 +1497,7 @@ class AIFilter:
             identity = news.get('id') or news.get('link') or id(news)
             if identity in selected_ids or not news.get('_ai_assessed'):
                 continue
-            if news.get('_hard_excluded'):
+            if news.get('_hard_excluded') or not news.get('_ai_keep'):
                 continue
             if news.get('topic') == '其他' or float(news.get('relevance_score', 0) or 0) < min_score:
                 continue
@@ -1497,10 +1580,12 @@ class AIFilter:
             summary = (news.get('summary', '') or '')[:300]
             source = news.get('source', '')
             category = news.get('category', '')
-            news_items.append(f"[{i}] 标题: {title}\n来源: {source} | 来源分类: {category}\n摘要: {summary}")
+            news_items.append(f"[{i}] 标题: {title}\n来源: {source} | 来源分类: {category} | 原文发布时间: {news.get('published', '未知')}\n摘要: {summary}")
 
 
-        return f"""请逐条评估以下新闻。财经、宏观、产业和科技是核心；地缘政治只在重大升级或具有明确市场传导时保留。
+        from datetime import datetime, timezone, timedelta
+        today = datetime.now(timezone(timedelta(hours=8))).isoformat(timespec='minutes')
+        return f"""当前评估时间（UTC+8）：{today}。请逐条评估以下新闻。财经、宏观、产业和科技是核心；地缘政治只在重大升级或具有明确市场传导时保留。
 
 每条必须返回：
 - keep：1保留，0排除
@@ -1525,7 +1610,8 @@ class AIFilter:
 3. 普通券商、分析师、策略师、研究员或经济学家的预测和评论，若没有可核验数据或新增事实，keep必须为0；预测中的目标价、涨跌幅或点位仍是观点，不算事实数据。央行行长、美联储主席等有政策决定权者的正式政策信号除外。
 4. 公司产能、并购、业绩、供应链、融资和重大技术进展应优先于重复地缘报道。
 5. 不要因为来源是国际大媒体就自动加分。
-6. summary不得添加“可能影响……”“或将提振……”“可能造成冲击……”等推断性尾缀；影响判断只写入impact_score和reason，不写入展示摘要。
+6. 回顾旧事件、近期转载旧决定但没有新增事实的条目，keep必须为0；采集时间和将来生效时间不是新闻发布时间。研究或“数据显示”类条目须交代统计对象、时间/样本与实际数值，材料不足则排除，不得补造。
+7. summary不得添加“可能影响……”“或将提振……”“可能造成冲击……”等推断性尾缀；影响判断只写入impact_score和reason，不写入展示摘要。
 
 严格返回：
 {{
@@ -1593,6 +1679,10 @@ class AIFilter:
                 news['ai_summary'] = _ensure_summary_context(
                     _summary_with_key_figures(news, ai_summary), news.get('title', '')
                 )
+            if keep and _summary_lacks_context(news.get('ai_summary') or news.get('summary', '')):
+                keep = False
+                news['_hard_excluded'] = True
+                news['filter_reason'] = '摘要缺少可核验的具体事实'
             if keep and self._is_unsupported_third_party_opinion(news):
                 keep = False
                 news['_hard_excluded'] = True

@@ -127,8 +127,18 @@ class NewsStorage:
 
                 for news in news_list:
                     try:
-                        cursor.execute('SELECT id FROM news WHERE content_hash = ?', (news['content_hash'],))
-                        if cursor.fetchone():
+                        cursor.execute(
+                            'SELECT id, published, collected_at FROM news WHERE content_hash = ? OR link = ?',
+                            (news['content_hash'], news['link']),
+                        )
+                        existing = cursor.fetchone()
+                        if existing:
+                            # Repair only the legacy collection-time placeholder, from verified input.
+                            if (news.get('_publication_verified') and existing[1] == existing[2]
+                                    and news.get('published') != existing[1]):
+                                cursor.execute('UPDATE news SET published = ? WHERE id = ?',
+                                               (news['published'], existing[0]))
+                                logger.info("已用原文发布日期修复一条历史采集时间占位")
                             skipped_count += 1
                             continue
 
@@ -282,6 +292,9 @@ class NewsStorage:
         collected_at = row['collected_at']
         category = row['category'] if 'category' in row.keys() else ''
         is_foreign = category == '英文'
+        scrape_sources = {item['name'] for item in settings.resolved_news_sources()
+                          if item.get('mode') == 'scrape'}
+        unverified = row['source'] in scrape_sources and bool(published) and published == collected_at
 
         if published:
             try:
@@ -312,6 +325,7 @@ class NewsStorage:
             'published': published,
             'collected_at': collected_at,
             '_published_timezone': 'Asia/Shanghai' if published else '',
+            '_published_unverified': unverified,
             'category': row['category'],
             'content_hash': row['content_hash'],
             'title_original': row['title_original'] if 'title_original' in row.keys() else '',
